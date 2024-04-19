@@ -1,0 +1,720 @@
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/HadronLevel.h new/include/Pythia8/HadronLevel.h
+--- old/include/Pythia8/HadronLevel.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/HadronLevel.h	2022-01-10 10:17:45.246265627 -0500
+@@ -58,7 +58,7 @@ public:
+   StringFlav* getStringFlavPtr() {return &flavSel;}
+ 
+   // Generate the next event.
+-  bool next(Event& event);
++  bool next(Event& event, StringHistory& strings);
+ 
+   // Special routine to allow more decays if on/off switches changed.
+   bool moreDecays(Event& event);
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/HiddenValleyFragmentation.h new/include/Pythia8/HiddenValleyFragmentation.h
+--- old/include/Pythia8/HiddenValleyFragmentation.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/HiddenValleyFragmentation.h	2022-01-10 10:17:45.246265627 -0500
+@@ -120,7 +120,7 @@ public:
+   bool init();
+ 
+   // Do the fragmentation: driver routine.
+-  bool fragment(Event& event);
++  bool fragment(Event& event, StringHistory& strings);
+ 
+ protected:
+ 
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/LowEnergyProcess.h new/include/Pythia8/LowEnergyProcess.h
+--- old/include/Pythia8/LowEnergyProcess.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/LowEnergyProcess.h	2022-01-10 10:17:45.246265627 -0500
+@@ -44,6 +44,7 @@ public:
+ 
+   // Event record to handle hadronization.
+   Event         leEvent;
++  StringHistory leStrings;
+ 
+   // Give access to b slope in elastic and diffractive interactions.
+   double bSlope( int id1In, int id2In, double eCMIn, double mAIn, double mBIn,
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/NucleonExcitations.h new/include/Pythia8/NucleonExcitations.h
+--- old/include/Pythia8/NucleonExcitations.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/NucleonExcitations.h	2022-01-10 10:17:45.246265627 -0500
+@@ -27,11 +27,11 @@ public:
+   // Constructor.
+   NucleonExcitations() = default;
+ 
+-  // Objects of this class should only be passed as references.
+-  NucleonExcitations(const NucleonExcitations&) = delete;
+-  NucleonExcitations(NucleonExcitations&&) = delete;
+-  NucleonExcitations& operator=(const NucleonExcitations&) = delete;
+-  NucleonExcitations& operator=(NucleonExcitations&&) = delete;
++  //// Objects of this class should only be passed as references.
++  //NucleonExcitations(const NucleonExcitations&) = delete;
++  //NucleonExcitations(NucleonExcitations&&) = delete;
++  //NucleonExcitations& operator=(const NucleonExcitations&) = delete;
++  //NucleonExcitations& operator=(NucleonExcitations&&) = delete;
+ 
+   // Read in excitation data from the specified file.
+   bool init(string path);
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/Pythia.h new/include/Pythia8/Pythia.h
+--- old/include/Pythia8/Pythia.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/Pythia.h	2022-01-10 10:17:45.246265627 -0500
+@@ -266,6 +266,9 @@ public:
+   // The event record for the parton-level central process.
+   Event           process = {};
+ 
++  // The event record for the string history.
++  StringHistory   strings = {};
++
+   // The event record for the complete event history.
+   Event           event = {};
+ 
+@@ -484,9 +487,11 @@ private:
+   // The junction spltiting class.
+   JunctionSplitting junctionSplitting = {};
+ 
++public:
+   // The main generator class to produce the hadron level of the event.
+   HadronLevel hadronLevel = {};
+-
++private:
++  
+   // The total cross section class is used both on process and parton level.
+   SigmaTotal sigmaTot = {};
+ 
+diff -rupN -x pt.py~ -x .git old/include/Pythia8/StringFragmentation.h new/include/Pythia8/StringFragmentation.h
+--- old/include/Pythia8/StringFragmentation.h	2021-04-05 13:57:22.000000000 -0400
++++ new/include/Pythia8/StringFragmentation.h	2022-01-17 08:58:57.950279966 -0500
+@@ -30,6 +30,7 @@ namespace Pythia8 {
+ // one of the current endpoints of the string system.
+ // Only to be used inside StringFragmentation, so no private members.
+ 
++class StringHistory;
+ class StringEnd {
+ 
+ public:
+@@ -92,7 +93,7 @@ public:
+          GammaOld, GammaNew, xPosOld, xPosNew, xPosHad, xNegOld, xNegNew,
+          xNegHad, aLund, bLund;
+   FlavContainer flavOld, flavNew;
+-  Vec4   pHad, pSoFar;
++  Vec4   pSoFar;
+ 
+ };
+ 
+@@ -120,7 +121,8 @@ public:
+     FragModPtr fragModPtrIn = NULL);
+ 
+   // Do the fragmentation: driver routine.
+-  bool fragment( int iSub, ColConfig& colConfig, Event& event);
++  bool fragment( int iSub, ColConfig& colConfig, Event& event,
++		 StringHistory& strings);
+ 
+   // Find the boost matrix to the rest frame of a junction.
+   RotBstMatrix junctionRestFrame(Vec4& p0, Vec4& p1, Vec4& p2);
+@@ -156,6 +158,7 @@ private:
+   int    iPos, iNeg;
+   double w2Rem, stopMassNow;
+   Vec4   pSum, pRem, pJunctionHadrons;
++  vector<Particle> ghosts;
+ 
+   // List of partons in string system.
+   vector<int> iParton, iPartonMinLeg, iPartonMidLeg, iPartonMax;
+@@ -193,7 +196,7 @@ private:
+ 
+   // Produce the final two partons to complete the system.
+   bool finalTwo(bool fromPos, Event& event, bool usedPosJun, bool usedNegJun,
+-  double nNSP);
++  double nNSP, StringHistory& strings);
+ 
+   // Final region information.
+   Vec4 pPosFinalReg, pNegFinalReg, eXFinalReg, eYFinalReg;
+@@ -208,7 +211,7 @@ private:
+   void store(Event& event);
+ 
+   // Fragment off two of the string legs in to a junction.
+-  bool fragmentToJunction(Event& event);
++  bool fragmentToJunction(Event& event, StringHistory& strings);
+ 
+   // Initially considered legs from the junction.
+   int legMin, legMid;
+@@ -219,11 +222,68 @@ private:
+   // Get the number of nearby strings given the energies.
+   double nearStringPieces(StringEnd end,
+     vector< vector< pair<double,double> > >& rapPairs);
+-
++  
+ };
+ 
+ //==========================================================================
+ 
++// Simple structure to hold the string history.
++
++class StringHistory {
++
++public:
++
++  // Initialize the event records.
++  void init(string headerIn = "", Settings* settingsPtrIn = nullptr,
++    ParticleData* particleDataPtrIn = nullptr, int startColTagIn = 100,
++    Event* eventPtrIn = nullptr, StringFlav* flavSelIn = nullptr);
++  
++  // Clear the events.
++  void clear();
++
++  // Reset the events.
++  void reset();
++
++  // Append the history.
++  int append(StringEnd &now, int statusHad, int iPos, int iNeg, Vec4 pHad);
++
++  // Remove last n entries.
++  void popBack(int nRemove = 1);
++
++  // Select and return return the new string end and hadron IDs. If
++  // Vec4 is provided, also select the mass of the hadron and set the
++  // hadron energy. Three possible models can be selected, depending
++  // on arugments.
++  //
++  // (1) If Vec4 is not provided, or Vec4::e() == 0, use the default
++  //     model.
++  // (2) If Vec4 is provided, Vec4::e() != 0, and nNSP == 0, use the
++  //     mT2 suppression model.
++  // (3) If Vec4 is provided, Vec4::e() != 0, and nNSP != 0, use the
++  //     thermal model.
++  //
++  // Note that for the default model, the transverse momentum of the
++  // hadron is selected after flavor selection.
++  //
++  // WARNING: currently this does not handle the popcorn model.
++  pair<int, int> flavor(int end, Vec4* had = nullptr, int nNSP = 0);
++  
++  // Public access to the events.
++  Event endA{}, endB{}, endC{}, hads{};
++
++private:
++  Event*         eventPtr{nullptr};
++  StringFlav*    flavSelPtr{nullptr};
++  ParticleData*  particleDataPtr{nullptr};
++  
++  // Maximum number of breaks and minimum string mass.
++  int nBreaksMax;
++  double mStringMin;
++
++};
++  
++//==========================================================================
++
+ } // end namespace Pythia8
+ 
+ #endif // Pythia8_StringFragmentation_H
+diff -rupN -x pt.py~ -x .git old/plugins/python/generate new/plugins/python/generate
+--- old/plugins/python/generate	2021-04-05 13:57:22.000000000 -0400
++++ new/plugins/python/generate	2022-01-10 10:17:45.250267215 -0500
+@@ -30,7 +30,7 @@ Configuration options.
+ --debug     : Do not remove generated files.
+ BLOCKTEXT
+ OPTIONS="-h --h -help --help --part --full --user --debug"
+-CLASSES="Pythia Event Vec4 RotBstMatrix Particle ParticleData ParticleDataEntry DecayChannel Info Settings Flag Mode Parm Word FVec MVec PVec WVec Rndm PDF DecayHandler RndmEngine UserHooks MergingHooks BeamShape SigmaProcess TimeShower SpaceShower HeavyIons PartonVertex Hist HistPlot SlowJet SlowJetHook"
++CLASSES="Pythia Event Vec4 RotBstMatrix Particle ParticleData ParticleDataEntry DecayChannel Info Settings Flag Mode Parm Word FVec MVec PVec WVec Rndm PDF DecayHandler RndmEngine UserHooks MergingHooks BeamShape SigmaProcess TimeShower SpaceShower HeavyIons PartonVertex Hist HistPlot SlowJet SlowJetHook StringHistory"
+ FUNCTIONS="m m2 dot3 cross3 cross4 theta costheta phi cosphi RRapPhi REtaPhi"
+ PYTHIA_INCLUDE="../../include"
+ BINDER_INCLUDE="include"
+@@ -56,13 +56,15 @@ function binder() {
+ ################################################################################
+ function configure_base() {
+     cat > $BINDER_CFG << BLOCKTEXT
+-+include <Pythia8/UserHooks.h>
+ +include <Pythia8/HIUserHooks.h>
+ +include <Pythia8/HeavyIons.h>
+ +include <Pythia8/BeamShape.h>
+ +include <pybind11/stl.h>
+ +include <pybind11/complex.h>
+ -class Pythia8::Writer
++-function Pythia8::isnan
++-function Pythia8::isinf
++-function Pythia8::isfinite
+ +binder std::multiset REMOVE
+ +binder std::complex REMOVE
+ +binder std::vector REMOVE
+@@ -231,7 +233,7 @@ sed -i.sed "s/$OLD/$NEW/g" $BINDER_SRC/p
+ 
+ # Include the module documentation.
+ cat > $BINDER_DOC << BLOCKTEXT
+-Copyright (C) 2019 Torbjorn Sjostrand.
++Copyright (C) 2020 Torbjorn Sjostrand.
+ PYTHIA is licenced under the GNU GPL v2 or later, see COPYING for details.
+ Please respect the MCnet Guidelines, see GUIDELINES for details.
+ 
+diff -rupN -x pt.py~ -x .git old/share/Pythia8/xmldoc/Fragmentation.xml new/share/Pythia8/xmldoc/Fragmentation.xml
+--- old/share/Pythia8/xmldoc/Fragmentation.xml	2021-04-05 13:57:22.000000000 -0400
++++ new/share/Pythia8/xmldoc/Fragmentation.xml	2022-01-17 09:19:10.925928927 -0500
+@@ -1,5 +1,16 @@
+ <chapter name="Fragmentation"> 
+- 
++
++<h2>Modifications</h2> 
++
++<modeopen name="Fragmentation:nBreaksMax" default="0" min="0">
++Maximum number of breaks allowed for a string. If <code>0</code>, then
++allow all breaks.
++</modeopen> 
++
++<parm name="Fragmentation:mStringMin" default="0" min="0">
++Minimum allowed mass of the string.
++</parm>
++
+ <h2>Fragmentation</h2> 
+  
+ Fragmentation in PYTHIA is based on the Lund string model 
+diff -rupN -x pt.py~ -x .git old/src/HadronLevel.cc new/src/HadronLevel.cc
+--- old/src/HadronLevel.cc	2021-04-05 13:57:22.000000000 -0400
++++ new/src/HadronLevel.cc	2022-01-10 10:17:45.250267215 -0500
+@@ -174,13 +174,13 @@ bool HadronLevel::init( TimeShowerPtr ti
+ 
+ // Hadronize and decay the next parton-level.
+ 
+-bool HadronLevel::next( Event& event) {
++bool HadronLevel::next( Event& event, StringHistory &strings) {
+ 
+   // Store current event size to mark Parton Level content.
+   event.savePartonLevelSize();
+ 
+   // Do Hidden-Valley fragmentation, if necessary.
+-  if (useHiddenValley) hiddenvalleyFrag.fragment(event);
++  if (useHiddenValley) hiddenvalleyFrag.fragment(event, strings);
+ 
+   // Colour-octet onia states must be decayed to singlet + gluon.
+   if (!decayOctetOnia(event)) return false;
+@@ -253,7 +253,8 @@ bool HadronLevel::next( Event& event) {
+ 
+         // String fragmentation of each colour singlet (sub)system.
+         if ( colConfig[iSub].massExcess > mStringMin ) {
+-          if (!stringFrag.fragment( iSub, colConfig, event)) return false;
++          if (!stringFrag.fragment( iSub, colConfig, event, strings))
++	    return false;
+ 
+         // Low-mass string treated separately. Tell if diffractive system.
+         } else {
+diff -rupN -x pt.py~ -x .git old/src/HiddenValleyFragmentation.cc new/src/HiddenValleyFragmentation.cc
+--- old/src/HiddenValleyFragmentation.cc	2021-04-05 13:57:22.000000000 -0400
++++ new/src/HiddenValleyFragmentation.cc	2022-01-10 10:17:45.250267215 -0500
+@@ -194,7 +194,7 @@ bool HiddenValleyFragmentation::init() {
+ 
+ // Perform the fragmentation.
+ 
+-bool HiddenValleyFragmentation::fragment(Event& event) {
++bool HiddenValleyFragmentation::fragment(Event& event, StringHistory &strings) {
+ 
+   // Reset containers for next event.
+   hvEvent.reset();
+@@ -217,7 +217,7 @@ bool HiddenValleyFragmentation::fragment
+ 
+   // HV-string fragmentation when enough mass to produce >= 3 HV-mesons.
+   if (mSys > 3.5 * mhvMeson) {
+-    if (!hvStringFrag.fragment( 0, hvColConfig, hvEvent)) return false;
++    if (!hvStringFrag.fragment( 0, hvColConfig, hvEvent, strings)) return false;
+ 
+   // HV-ministring fragmentation when enough mass to produce 2 HV-mesons.
+   } else if (mSys > 2.1 * mhvMeson) {
+diff -rupN -x pt.py~ -x .git old/src/LowEnergyProcess.cc new/src/LowEnergyProcess.cc
+--- old/src/LowEnergyProcess.cc	2021-04-05 13:57:22.000000000 -0400
++++ new/src/LowEnergyProcess.cc	2022-01-10 10:17:45.250267215 -0500
+@@ -799,7 +799,8 @@ bool LowEnergyProcess::simpleHadronizati
+ 
+     // String fragmentation of each colour singlet (sub)system.
+     if ( mExcess > mStringMin + mDiqDiq) {
+-      fragDone = stringFragPtr->fragment( iSub, simpleColConfig, leEvent);
++      fragDone = stringFragPtr->fragment( iSub, simpleColConfig, leEvent,
++					  leStrings);
+       if (!fragDone && mExcess > mStringMin + mDiqDiq + 4. * MPI) return false;
+     }
+ 
+diff -rupN -x pt.py~ -x .git old/src/Pythia.cc new/src/Pythia.cc
+--- old/src/Pythia.cc	2021-04-05 13:57:22.000000000 -0400
++++ new/src/Pythia.cc	2022-01-17 09:05:13.836569222 -0500
+@@ -831,6 +831,8 @@ bool Pythia::init() {
+   // Set headers to distinguish the two event listing kinds.
+   int startColTag = settings.mode("Event:startColTag");
+   process.init("(hard process)", &particleData, startColTag);
++  strings.init("(hadronisation strings)", &settings, &particleData,
++    startColTag, &event, hadronLevel.getStringFlavPtr());
+   event.init("(complete event)", &particleData, startColTag);
+ 
+   // Final setup stage of particle data, notably resonance widths.
+@@ -1582,6 +1584,7 @@ bool Pythia::next() {
+   infoPrivate.clear();
+   weightContainer.clear();
+   process.clear();
++  strings.clear();
+   event.clear();
+   partonSystems.clear();
+   beamA.clear();
+@@ -1736,6 +1739,7 @@ bool Pythia::next() {
+       }
+ 
+       // Reset event record and (extracted partons from) beam remnants.
++      strings.clear();
+       event.clear();
+       beamA.clear();
+       beamB.clear();
+@@ -1826,7 +1830,7 @@ bool Pythia::next() {
+ 
+       // Hadron-level: hadronization, decays.
+       infoPrivate.addCounter(16);
+-      if ( !hadronLevel.next( event) ) {
++      if ( !hadronLevel.next( event, strings) ) {
+         infoPrivate.errorMsg("Error in Pythia::next: "
+           "hadronLevel failed; try again");
+         physical = false;
+@@ -2136,7 +2140,7 @@ bool Pythia::forceHadronLevel(bool findJ
+     }
+ 
+     // Hadron-level: hadronization, decays.
+-    if (hadronLevel.next( event)) break;
++    if (hadronLevel.next( event, strings)) break;
+ 
+     // If failure then warn, restore original configuration and try again.
+     infoPrivate.errorMsg("Error in Pythia::forceHadronLevel: "
+@@ -2255,7 +2259,7 @@ bool Pythia::nextNonPert() {
+ 
+   // Do hadron level.
+   if (doHadronLevel) {
+-    if (!hadronLevel.next(event)) {
++    if (!hadronLevel.next(event, strings)) {
+       infoPrivate.errorMsg("Error in Pythia::nextNonPert: "
+         "Further hadron level processes failed");
+       return false;
+@@ -2356,7 +2360,7 @@ bool Pythia::doRHadronDecays( ) {
+   if ( !partonLevel.resonanceShowers( process, event, false) ) return false;
+ 
+   // Subsequent hadronization and decays.
+-  if ( !hadronLevel.next( event) ) return false;
++  if ( !hadronLevel.next( event, strings) ) return false;
+ 
+   // Done.
+   return true;
+@@ -2736,7 +2740,8 @@ bool Pythia::check() {
+     }
+ 
+     // Some intermediate shower partons excepted from (E, p, m) consistency.
+-    bool checkMass = event[i].statusAbs() != 49 && event[i].statusAbs() != 59;
++    bool checkMass = event[i].statusAbs() != 49 && event[i].statusAbs() != 59
++      && event[i].statusAbs() != 77 && event[i].statusAbs() != 78;
+ 
+     // Look for particles with mismatched or not-a-number energy/momentum/mass.
+     if (isfinite(event[i].p()) && isfinite(event[i].m())) {
+@@ -2832,9 +2837,10 @@ bool Pythia::check() {
+       vector<int> dList = event[i].daughterList();
+       if (mList.size() == 0 && abs(status) != 11 && abs(status) != 12)
+         noMot.push_back(i);
+-      if (dList.size() == 0 && status < 0 && status != -11)
+-        noDau.push_back(i);
+-
++      if (dList.size() == 0 && status < 0 && status != -11 && status != -77
++	  && status != -78) noDau.push_back(i);
++      if (status == -78) mList.clear();
++      
+       // Check that the particle appears in the daughters list of each mother.
+       for (int j = 0; j < int(mList.size()); ++j) {
+         if ( event[mList[j]].daughter1() <= i
+diff -rupN -x pt.py~ -x .git old/src/StringFragmentation.cc new/src/StringFragmentation.cc
+--- old/src/StringFragmentation.cc	2021-04-05 13:57:22.000000000 -0400
++++ new/src/StringFragmentation.cc	2022-01-17 09:43:37.644778272 -0500
+@@ -657,7 +657,7 @@ void StringFragmentation::init(StringFla
+ // Perform the fragmentation.
+ 
+ bool StringFragmentation::fragment( int iSub, ColConfig& colConfig,
+-  Event& event) {
++  Event& event, StringHistory& strings) {
+ 
+   // Find partons and their total four-momentum.
+   iParton            = colConfig[iSub].iParton;
+@@ -687,7 +687,7 @@ bool StringFragmentation::fragment( int
+   // Then iParton overwritten to remaining leg + leftover diquark.
+   pJunctionHadrons = 0.;
+   hasJunction = colConfig[iSub].hasJunction;
+-  if (hasJunction && !fragmentToJunction(event)) return false;
++  if (hasJunction && !fragmentToJunction(event, strings)) return false;
+   int junctionHadrons = hadrons.size();
+   if (hasJunction) {
+     idPos  = event[ iParton[0] ].id();
+@@ -804,6 +804,7 @@ bool StringFragmentation::fragment( int
+       int colHadOld = nowEnd.colOld;
+       int colHadNew = nowEnd.colNew;
+       if ( !nowEnd.fromPos ) swap(colHadOld, colHadNew);
++      if ( strings.append(nowEnd, statusHad, iPos, iNeg, pHad) < 0) break;
+       hadrons.append( nowEnd.idHad, statusHad, iPos, iNeg,
+         0, 0, colHadOld, colHadNew, pHad, nowEnd.mHad);
+       if (pHad.e() < 0.) break;
+@@ -820,12 +821,14 @@ bool StringFragmentation::fragment( int
+       ((rndmPtr->flat() < 0.5) ? posEnd : negEnd), rapPairs) : 0.;
+ 
+     // When done, join in the middle. If this works, then really done.
+-    if ( finalTwo(fromPos, event, usedPosJun, usedNegJun, nNSP) )  break;
++    if ( finalTwo(fromPos, event, usedPosJun, usedNegJun, nNSP, strings) )
++      break;
+ 
+     // Else remove produced particles (except from first two junction legs)
+     // and start all over.
+     int newHadrons = hadrons.size() - junctionHadrons;
+     hadrons.popBack(newHadrons);
++    strings.popBack(newHadrons);
+     stringVertices.clear();
+     posEnd.hadSoFar = 0;
+     negEnd.hadSoFar = 0;
+@@ -1491,7 +1494,7 @@ bool StringFragmentation::setHadronVerti
+ // Produce the final two partons to complete the system.
+ 
+ bool StringFragmentation::finalTwo(bool fromPos, Event& event,
+-  bool usedPosJun, bool usedNegJun, double nNSP) {
++  bool usedPosJun, bool usedNegJun, double nNSP, StringHistory& strings) {
+ 
+   // Check whether we went too far in p+-.
+   if (pRem.e() < 0.  || w2Rem < 0. || (hadrons.size() > 0
+@@ -1695,6 +1698,10 @@ bool StringFragmentation::finalTwo(bool
+   }
+ 
+   // Add produced particles to the event record.
++  if (strings.append( posEnd, statusHadPos, posEnd.iEnd,
++      negEnd.iEnd, pHadPos) < 0) return true;
++  if (strings.append( negEnd, statusHadNeg, posEnd.iEnd,
++      negEnd.iEnd, pHadNeg) < 0) return true;
+   hadrons.append( posEnd.idHad, statusHadPos, posEnd.iEnd, negEnd.iEnd,
+     0, 0, posEnd.colOld, colMid, pHadPos, posEnd.mHad);
+   hadrons.append( negEnd.idHad, statusHadNeg, posEnd.iEnd, negEnd.iEnd,
+@@ -1803,16 +1810,35 @@ StringRegion StringFragmentation::finalR
+ 
+ void StringFragmentation::store(Event& event) {
+ 
++  // Insert ghosts.
++  vector< pair<int, int> > iStrings(3, make_pair(-1, 0));
++  if (hasJunction) {
++    int iStart(hadrons[0].mother1()), iGhost(-1);
++    vector<Particle> partons;
++    for (int i = hadrons[0].mother1(); i <= hadrons[0].mother2(); ++i) {
++      int col(event[i].col()), acol(event[i].acol());
++      for (unsigned int j = 0; j < ghosts.size(); ++j) {
++	if ((col && col == ghosts[j].acol()) ||
++	    (acol && acol == ghosts[j].col())) {
++	  iGhost = j;
++	  iStrings[j].first = partons.size() + iStart;
++	  ghosts[j].status(-78);
++	  partons.push_back(ghosts[j]); break;
++	}
++      }
++      int k = partons.size() + iStart;
++      if (iGhost != -1) iStrings[iGhost].second = k;
++      if (event[i].mother1()) event[event[i].mother1()].daughters(k, k);
++      event[i].status(-77);
++      partons.push_back(event[i]);
++    }
++    event.popBack(hadrons[0].mother2() - hadrons[0].mother1() + 1);
++    for (unsigned int i = 0; i < partons.size(); ++i) event.append(partons[i]);
++  }
++
+   // Starting position.
+   int iFirst = event.size();
+ 
+-  // Remove colour indices to avoid confusion by default.
+-  if ( !traceColours )
+-    for (int i = 0; i < hadrons.size(); ++i) {
+-      hadrons[i].col(0);
+-      hadrons[i].acol(0);
+-    }
+-
+   // Copy straight over from first two junction legs.
+   if (hasJunction) {
+     for (int i = 0; i < hadrons.size(); ++i)
+@@ -1843,19 +1869,37 @@ void StringFragmentation::store(Event& e
+     event[i].tau( event[i].tau0() * rndmPtr->exp() );
+ 
+   // Mark original partons as hadronized and set their daughter range.
+-  for (int i = 0; i < int(iParton.size()); ++i)
+-  if (iParton[i] >= 0) {
+-    event[ iParton[i] ].statusNeg();
+-    event[ iParton[i] ].daughters(iFirst, iLast);
++  if (hasJunction) {
++    vector< pair<int, int> > iHadrons(3, make_pair(0, 0));
++    for (int i = iFirst; i <= iLast; ++i) {
++      int j = 2;
++      if (event[i].status() == 85) j = 0;
++      else if (event[i].status() == 86) j = 1;
++      event[i].mothers(iStrings[j].first, iStrings[j].second);
++      if (iHadrons[j].first == 0) iHadrons[j].first = i;
++      iHadrons[j].second = i;
++    }
++    for (int i = 0; i < 3; ++i) {
++      for (int j = iStrings[i].first; j <= iStrings[i].second; ++j) {
++	event[j].daughters(iHadrons[i].first, iHadrons[i].second);
++      }
++    }
++  } else {
++    for (int i = 0; i < int(iParton.size()); ++i)
++      if (iParton[i] >= 0) {
++	event[ iParton[i] ].statusNeg();
++	event[ iParton[i] ].daughters(iFirst, iLast);
++      }
+   }
+-
++    
+ }
+ 
+ //--------------------------------------------------------------------------
+ 
+ // Fragment off two of the string legs in to a junction.
+ 
+-bool StringFragmentation::fragmentToJunction(Event& event) {
++bool StringFragmentation::fragmentToJunction(Event& event,
++					     StringHistory& strings) {
+ 
+   // Identify range of partons on the three legs.
+   // (Each leg begins with an iParton[i] = -(10 + 10*junctionNumber + leg),
+@@ -2129,6 +2173,8 @@ bool StringFragmentation::fragmentToJunc
+             }
+ 
+             // Else construct kinematics of the new hadron and store it.
++	    if (strings.append(posEnd, statusHad, iPos, iNeg, pHad) < 0)
++              return true;
+             hadrons.append( posEnd.idHad, statusHad, iPos, iNeg,
+               0, 0, posEnd.colOld, posEnd.colNew, pHad, posEnd.mHad);
+ 
+@@ -2151,6 +2197,7 @@ bool StringFragmentation::fragmentToJunc
+           // End of fragmentation loop. Inner loopback if ends on a diquark.
+           if ( noNegE && abs(posEnd.flavOld.id) < 10 ) break;
+           hadrons.popBack(nHadrons);
++	  strings.popBack(nHadrons);
+           junctionVertices.clear();
+           if (legNow == legMin) legMinVertices.clear();
+           else legMidVertices.clear();
+@@ -2209,6 +2256,11 @@ bool StringFragmentation::fragmentToJunc
+   }
+ 
+   // Now found solution; no more loopback. Remove temporary parton copies.
++  ghosts.clear();
++  event[event.size() - 2].rotbst(MfromJRF);
++  event[event.size() - 1].rotbst(MfromJRF);
++  ghosts.push_back(event[event.size() - 2]);
++  ghosts.push_back(event[event.size() - 1]);
+   event.popBack( iPartonMin.size() + iPartonMid.size() );
+ 
+   // Construct and store an effective diquark string end from the
+@@ -2240,7 +2292,8 @@ bool StringFragmentation::fragmentToJunc
+     event[iDiquark].acol(event[iPartonMax[iPsize - 2]].col());
+   else
+     event[iDiquark].col(event[iPartonMax[iPsize - 2]].acol());
+-
++  ghosts.push_back(event[iDiquark]);
++  
+   // Modify parton list to remaining leg + remnant of the first two.
+   iParton = iPartonMax;
+ 
+@@ -2521,4 +2574,111 @@ double StringFragmentation::nearStringPi
+ 
+ //==========================================================================
+ 
++// Simple structure to hold the string history.
++
++//--------------------------------------------------------------------------
++
++// Initialize the event records.
++
++void StringHistory::init( string headerIn, Settings* settingsPtrIn,
++  ParticleData* particleDataPtrIn, int startColTagIn, Event* eventPtrIn,
++  StringFlav* flavSelPtrIn) {
++    endA.init(headerIn + " endA", particleDataPtrIn, startColTagIn);
++    endB.init(headerIn + " endB", particleDataPtrIn, startColTagIn);
++    endC.init(headerIn + " endC", particleDataPtrIn, startColTagIn);
++    hads.init(headerIn + " hadrons", particleDataPtrIn, startColTagIn);
++    eventPtr = eventPtrIn;
++    flavSelPtr = flavSelPtrIn;
++    particleDataPtr = particleDataPtrIn;
++    if (settingsPtrIn != nullptr) {
++      nBreakMax = settingsPtrIn->mode("Fragmentation:nBreaksMax");
++      mStringMin = settingsPtrIn->parm("Fragmentation:mStringMin");
++    }
++  }
++  
++//--------------------------------------------------------------------------
++
++// Clear the events.
++
++void StringHistory::clear() {
++  endA.clear(); endB.clear(); endC.clear(); hads.clear();}
++
++//--------------------------------------------------------------------------
++
++// Reset the events.
++
++void StringHistory::reset() {
++  endA.reset(); endB.reset(); endC.reset(); hads.reset();}
++
++//--------------------------------------------------------------------------
++
++// Append the history.
++
++int StringHistory::append(StringEnd &now, int statusHad, int iPos, int iNeg,
++			  Vec4 pHad) {
++  
++  // Determine the string components.
++  int colHadOld = now.colOld;
++  int colHadNew = now.colNew;
++  if (!now.fromPos) swap(colHadOld, colHadNew);
++  bool first = hads.back().mother1() != iPos || hads.back().mother2() != iNeg;
++  Particle* prtA = first ? &eventPtr->at(iPos) : &endA.back();
++  Particle* prtB = first ? &eventPtr->at(iNeg) : &endB.back();
++
++  // Check mass and number of breaks.
++  if (nBreaksMax && hads.size() >= nBreaksMax) return -1;
++  if (mStringMin && (prtA->p() + prtB->p()).mCalc() < mStringMin) return -1;
++  
++  // Append the string break.
++  if (!first && endC.back().status() == 83) prtA = &endC.back();
++  if (!first && endC.back().status() == 84) prtB = &endC.back();
++  endA.append(*prtA);
++  endB.append(*prtB);
++  endC.append(-now.flavNew.id, statusHad, iPos, iNeg, 0, 0, 0, 0,
++	      (now.fromPos ? prtA : prtB)->p() - pHad);
++  return hads.append(now.idHad, statusHad, iPos, iNeg, now.flavOld.id,
++		     now.flavNew.id, colHadOld, colHadNew, pHad, now.mHad);
++}
++
++//--------------------------------------------------------------------------
++
++// Remove last n entries.
++
++void StringHistory::popBack(int nRemove) {
++  endA.popBack(nRemove); endB.popBack(nRemove);
++  endC.popBack(nRemove); hads.popBack(nRemove);}
++
++//--------------------------------------------------------------------------
++
++// Select and return the new string end and hadron IDs.
++  
++pair<int, int> StringHistory::flavor(int end, Vec4* had, int nNSP) {
++  int idHad(0); double mHad(0);
++  FlavContainer idOld(end), idNew;
++
++  // Default model.
++  if (had == nullptr || had->e() == 0) {
++    do {
++      idNew = flavSelPtr->pick(idOld);
++      idHad = flavSelPtr->combine(idOld, idNew);
++    } while (idHad == 0);
++    if (had != nullptr) mHad = particleDataPtr->mSel(idHad);
++
++  // Thermal and mT2 suppression models.
++  } else {
++    double ptHad(had->pT());
++    do {
++      idNew = flavSelPtr->pick(idOld, ptHad, nNSP);
++      idHad = flavSelPtr->getHadronID(idOld, idNew);
++    } while (idHad == 0);
++    mHad = flavSelPtr->getHadronMassWin(idHad);
++  }
++
++  // Set the energy and return.
++  if (had != nullptr) had->e(sqrt(pow2(mHad) + had->pAbs2()));
++  return make_pair(idNew.id, idHad);
++}
++  
++//==========================================================================
++
+ } // end namespace Pythia8
