@@ -50,12 +50,12 @@ with open (args.data_path_accept_reject, 'r') as f:
 counter = 0
 
 # Initialize padding parameters
-npad_accept_reject = 100 + 1
+npad_accept_reject = 100
 npad_event = 50
 
 print("Converting accepted-reject data...")
-with tqdm(total = len(lines[0:1000])) as pbar:
-    for line in lines[0:1000]:
+with tqdm(total = len(lines)) as pbar:
+    for line in lines:
         # Events are separated at the new line delimiter
         if line != '\n':
             if counter == 0:
@@ -93,8 +93,8 @@ counter = 0
 # Initialize padding parameters
 npad_event = 50
 
-with tqdm(total = len(lines[0:1000])) as pbar:
-    for line in lines[0:1000]:
+with tqdm(total = len(lines)) as pbar:
+    for line in lines:
         # Events are separated at the new line delimiter
         if line != '\n':
             if counter == 0:
