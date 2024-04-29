@@ -228,6 +228,9 @@ int main() {
   int nList  = 0;
   // Set a cutoff for the maximum number of rejections
   //int MAX_REJECT = 100;
+  //
+  string hadron_PATH = "pgun_qqbar_hadrons_a_1.5_b_0.6_sigma_0.335_N_1e6.txt";
+  string accept_reject_PATH = "pgun_qqbar_accept_reject_z_a_1.5_b_0.6_sigma_0.335_N_1e6.txt";
 
   // Generator; shorthand for event and particleData.
   Pythia pythia;
@@ -236,13 +239,13 @@ int main() {
   ParticleData& pdt      = pythia.particleData;
 
   // Set the frgamentation parameters.
-  pythia.readString("StringZ:aLund = 0.68");   // Monash
-  pythia.readString("StringZ:bLund = 0.98");   // Monash
-  pythia.readString("StringPT:sigma = 0.335"); // Monash
-
-  //pythia.readString("StringZ:aLund = 0.6");   // Monash
-  //pythia.readString("StringZ:bLund = 1.5");   // Monash
+  //pythia.readString("StringZ:aLund = 0.68");   // Monash
+  //pythia.readString("StringZ:bLund = 0.98");   // Monash
   //pythia.readString("StringPT:sigma = 0.335"); // Monash
+
+  pythia.readString("StringZ:aLund = 1.5");   //
+  pythia.readString("StringZ:bLund = 0.6");   //
+  pythia.readString("StringPT:sigma = 0.335"); //
 
   // Set the quark and hadron masses.
   //pythia.readString("1:m0 = 0");
@@ -305,7 +308,7 @@ int main() {
 
     // Generate events. Quit if failure.
     if (!pythia.next()) {
-      cout << " Event generation aborted prematurely, owing to error!\n";
+      cout << "Event generation aborted prematurely, owing to error!\n";
       break;
     }
 
@@ -341,7 +344,7 @@ int main() {
     // Append the accepted and rejected values to the master file
     if (eventCounter == 0 && nLines == nHadrons - 2) {
       // Create a new file.
-      ofstream datafile("pgun_qqbar_accept_reject_z_a_0.68_b_0.98_sigma_0.335.txt");
+      ofstream datafile(accept_reject_PATH);
       // Copy the event into the data file.
       while (getline(rfile, line)) {
         datafile << line << endl;
@@ -351,9 +354,10 @@ int main() {
       datafile.close();
 
       // Output hadron level particle flow data.
-      ofstream hadronfile("pgun_qqbar_hadrons_a_0.68_b_0.98_sigma_0.335.txt", ios::out | ios::app);
+      ofstream hadronfile(hadron_PATH, ios::out | ios::app);
       for (int i = 1; i <= strings.hads.size() - 3; ++i) {
-        hadronfile << strings.hads[i].px() << " " << strings.hads[i].py() << " " << strings.hads[i].pz() << " " << strings.hads[i].e() << endl;
+	// Convention (px, py, pz, E, m)
+        hadronfile << strings.hads[i].px() << " " << strings.hads[i].py() << " " << strings.hads[i].pz() << " " << strings.hads[i].e() << " " << strings.hads[i].m() << endl;
       }
       hadronfile << endl;
       hadronfile.close();
@@ -361,7 +365,7 @@ int main() {
       eventCounter++;
     } else if (nLines == nHadrons - 2) {
       // Append to the file
-      ofstream datafile("pgun_qqbar_accept_reject_z_a_0.68_b_0.98_sigma_0.335.txt", ios::out | ios::in | ios::app);
+      ofstream datafile(accept_reject_PATH, ios::out | ios::in | ios::app);
       // Copy the event into the data file.
       while (getline(rfile, line)) {
         datafile << line << endl;
@@ -371,9 +375,10 @@ int main() {
       datafile.close();
 
       // Output hadron level particle flow data.
-      ofstream hadronfile("pgun_qqbar_hadrons_a_0.68_b_0.98_sigma_0.335.txt", ios::out | ios::app);
+      ofstream hadronfile(hadron_PATH, ios::out | ios::app);
       for (int i = 1; i <= strings.hads.size() - 3; ++i) {
-        hadronfile << strings.hads[i].px() << " " << strings.hads[i].py() << " " << strings.hads[i].pz() << " " << strings.hads[i].e() << endl;
+	// Convention (px, py, pz, E, m)
+        hadronfile << strings.hads[i].px() << " " << strings.hads[i].py() << " " << strings.hads[i].pz() << " " << strings.hads[i].e() << " " << strings.hads[i].m() << endl;
       }
       hadronfile << endl;
       hadronfile.close();
