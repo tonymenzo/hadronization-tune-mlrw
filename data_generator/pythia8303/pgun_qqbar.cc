@@ -356,7 +356,7 @@ int main() {
       // Output hadron level particle flow data.
       ofstream hadronfile(hadron_PATH, ios::out | ios::app);
       for (int i = 1; i <= strings.hads.size() - 3; ++i) {
-	// Convention (px, py, pz, E, m)
+	      // Convention (px, py, pz, E, m)
         hadronfile << strings.hads[i].px() << " " << strings.hads[i].py() << " " << strings.hads[i].pz() << " " << strings.hads[i].e() << " " << strings.hads[i].m() << endl;
       }
       hadronfile << endl;
