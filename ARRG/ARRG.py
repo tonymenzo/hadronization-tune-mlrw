@@ -8,15 +8,18 @@ from torch.utils.data import DataLoader
 
 import os
 
+import matplotlib as mpl
+mpl.rcParams.update(mpl.rcParamsDefault)
 import matplotlib.pyplot as plt
 import seaborn as sns
 sns.set()
 sns.set_style("ticks")
-sns.set_context("paper", font_scale = 1.8)
-plt.rcParams['text.usetex'] = True
-plt.rcParams['font.size'] = 25
+#sns.set_context("paper", font_scale = 1.8)
+#plt.rcParams['text.usetex'] = True
+#plt.rcParams['font.size'] = 25
 
 from lund_weight import LundWeight
+from binned_loss import BinnedLoss
 
 class ARRG():
     def __init__(self, epochs, dim_multiplicity, dim_accept_reject, over_sample_factor, params_base,
@@ -57,79 +60,18 @@ class ARRG():
         self.print_details = print_details
         self.results_dir = results_dir
 
-        # Define the weiLund weight layer
+        print(self.params_init)
+
+        # Initialize the Lund weight module
         self.weight_nexus = LundWeight(self.params_base, self.params_init, over_sample_factor = self.over_sample_factor)
+        # Initialize the loss
+        self.binned_loss = BinnedLoss(results_dir = self.results_dir , print_detials = self.print_details)
 
         # Create a results directory if it doesn't exist
-        if not os.path.exists(self.results_dir):
-            os.mkdir(self.results_dir) 
-            print('A model directory was created at,', self.results_dir)
-    
-    def histogram(self, observable, weights = None, bins=50, min=0.0, max=1.0):
-        """
-        Generate a differentiable weighted histogram.
-        """
-        n_samples, n_chns = 1, 1
-        
-        # Initialize bins
-        hist_torch = torch.zeros(n_samples, n_chns, bins, device=observable.device)
-        delta = (max - min) / bins
-        bin_table = torch.linspace(min, max, steps=bins, device=observable.device)
-    
-        # Perform the binning
-        for dim in range(1, bins - 1):
-            h_r_sub_1, h_r, h_r_plus_1 = bin_table[dim - 1: dim + 2]
-    
-            mask_sub = ((h_r > observable) & (observable >= h_r_sub_1)).float()
-            mask_plus = ((h_r_plus_1 > observable) & (observable >= h_r)).float()
-
-            if weights == None:
-                hist_torch[:, :, dim].add_(torch.sum(((observable - h_r_sub_1) * mask_sub).view(n_samples, n_chns, -1), dim=-1))
-                hist_torch[:, :, dim].add_(torch.sum(((h_r_plus_1 - observable) * mask_plus).view(n_samples, n_chns, -1), dim=-1))
-            else:
-                hist_torch[:, :, dim].add_(torch.sum(((observable - h_r_sub_1) * mask_sub * weights).view(n_samples, n_chns, -1), dim=-1))
-                hist_torch[:, :, dim].add_(torch.sum(((h_r_plus_1 - observable) * mask_plus * weights).view(n_samples, n_chns, -1), dim=-1))
-
-        # Normalize the histogram so that the sum across all bins is 1
-        hist_torch /= hist_torch.sum(dim=-1, keepdim=True)
-
-        return (hist_torch / delta).squeeze(), bin_table
-
-    def binned_loss(self, sim_observable, exp_observable, weights):
-        """
-        Loss function which creates a n-dimensional density estimation 
-        and takes the mean-squared-error of an n-dimensional binning. 
-        """
-        # Find min and max of observables
-        minimum = torch.min(torch.minimum(sim_observable[:,0], exp_observable[:,0]))
-        maximum = torch.max(torch.maximum(sim_observable[:,0], exp_observable[:,0]))
-        
-        # Perform the binning of the macroscopic observables
-        histo_sim, bins_sim = self.histogram(sim_observable[:,0].unsqueeze(0), weights = weights, bins = int(maximum - minimum), min = minimum, max = maximum)
-        histo_exp, bins_exp = self.histogram(exp_observable[:,0].unsqueeze(0), bins = int(maximum - minimum), min = minimum, max = maximum)
-        
-        # Compute the psuedo-chi^2
-        """
-        # TBD insert stochastic uncertainty into the denominator of the loss with 1% lower bound as done in 1610.08328 
-        error = torch.ones(len(bins_exp))
-        error[(histo_exp > 0.) | (histo_sim > 0.)] = torch.div(error, (histo_exp + histo_sim))
-        """
-        pseudo_chi2 = (torch.pow((histo_sim - histo_exp), 2))
-
-        if self.print_details:
-            # Bin the simualted observable
-            histo_sim_OG, bins_sim_OG = self.histogram(sim_observable[:,0].unsqueeze(0), bins = int(maximum - minimum), min = minimum, max = maximum)
-            # Plot historgrams to ensure reweighting is working as expected
-            fig, ax = plt.subplots(1,1,figsize = (6,5))
-            ax.plot(bins_sim.detach().numpy(), histo_sim.detach().numpy(), '-o', label = r'$\mathrm{Weighted}$')
-            ax.plot(bins_exp.detach().numpy(), histo_exp.detach().numpy(), '-o', label = r'$\mathrm{Exp.}$')
-            ax.plot(bins_sim_OG.detach().numpy(), histo_sim_OG.detach().numpy(), '-o', label = r'$\mathrm{Sim.}$')
-            ax.legend(frameon = False)
-            fig.tight_layout()
-            fig.savefig(self.results_dir + r'/loss_binning_check.pdf', dpi=300, pad_inches = .1, bbox_inches = 'tight')
-            plt.close(fig)
-
-        return torch.sum(pseudo_chi2)
+        if self.results_dir != None:
+            if not os.path.exists(self.results_dir):
+                os.mkdir(self.results_dir) 
+                print('A model directory was created at,', self.results_dir)
 
     def train_ARRG(self, optimizer, scheduler=None):
         """
@@ -140,11 +82,13 @@ class ARRG():
         """
         a_b = [np.array([self.weight_nexus.params_a.clone().detach().numpy(), self.weight_nexus.params_b.clone().detach().numpy()])]
         #loss_epoch = []
-        
+        batch_counter = 0
         # TBD: Optimization for GPU training
         for i in tqdm(range(self.epochs), ncols = 100):
             device = "cpu"
+            batch_counter = 0
             for (x,y,z,w) in zip(self.sim_z_base, self.sim_mT_base, self.sim_observable_base, self.exp_observable):
+                print('Batch #', batch_counter)
                 x, y, z, w = x.to(device), y.to(device), z.to(device), w.to(device)
                 # Reset the gradients in the optimizer
                 optimizer.zero_grad()
@@ -152,13 +96,24 @@ class ARRG():
                 weights = self.weight_nexus(x, y, z)
                 # Compute the loss
                 loss = self.binned_loss(z, w, weights)
-                # Compute gradients
+                print('----------------------------------------------')
+                print('Loss:', loss.clone().detach().numpy())
+                # Compute gradients via backprop
                 loss.backward()
+                # Output the gradients of a and b
+                switch = 0
+                for param in self.weight_nexus.parameters():
+                    if switch == 0:
+                        switch += 1
+                        print('Gradient of a:', param.grad.clone().detach().numpy())
+                    else:
+                        print('Gradient of b:', param.grad.clone().detach().numpy())
                 # Update the network weights
                 optimizer.step()
                 # Update the learning rate scheduler
                 scheduler.step(loss)
-                
+                # Iterate the batch counter
+                batch_counter+=1
                 """
                 # Constrain weight layer parameters within allowed Pythia range
                 switch = 0
@@ -173,6 +128,7 @@ class ARRG():
                 # Output the loss and learning rate 
                 print(f'Loss: {loss.clone().detach().numpy():>8f}, LR: {optimizer.param_groups[0]["lr"]:>8f}')
                 print(f'a: {self.weight_nexus.params_a.clone().detach().numpy()}, b: {self.weight_nexus.params_b.clone().detach().numpy()}')
+                print('----------------------------------------------')
 
                 # Record the epoch loss
                 #loss_epoch.append(loss.detach().numpy())
@@ -182,9 +138,9 @@ class ARRG():
                 
                 if self.print_details:
                     # Check the histograms
-                    _, bins_exp = np.histogram(w[:,0].detach().numpy())
-                    _, bins_sim = np.histogram(z[:,0].detach().numpy())
-                    _, bins_fine_tuned = np.histogram(z[:,0].detach().numpy(), weights = weights.detach().numpy())
+                    _, bins_exp = np.histogram(w[:].detach().numpy())
+                    _, bins_sim = np.histogram(z[:].detach().numpy())
+                    _, bins_fine_tuned = np.histogram(z[:].detach().numpy(), weights = weights.detach().numpy())
     
                     min_exp, max_exp = bins_exp[0], bins_exp[-1]
                     min_sim, max_sim = bins_sim[0], bins_sim[-1]
@@ -192,47 +148,77 @@ class ARRG():
                     
                     # Plot multiplicity
                     fig_1, ax_1 = plt.subplots(1,1,figsize=(6,5))
-                    ax_1.hist(z[:,0].detach().numpy(), int(max_sim - min_sim), label = r'$\mathrm{Base}$', alpha = 0.5, density = True, edgecolor = 'black')
-                    ax_1.hist(w[:,0].detach().numpy(), int(max_exp - min_exp), label = r'$\mathrm{Exp.}$', alpha = 0.5, density = True, edgecolor = 'black')
-                    ax_1.hist(z[:,0].detach().numpy(), int(max_fine_tuned - min_fine_tuned), weights = weights.detach().numpy(), label = r'$\mathrm{Tuned}$', alpha = 0.5, density = True, edgecolor = 'black')
+                    ax_1.hist(z[:].detach().numpy(), int(max_sim - min_sim), alpha = 0.5, density = True, edgecolor = 'black', label = 'Base')#label = r'$\mathrm{Base}$')
+                    ax_1.hist(w[:].detach().numpy(), int(max_exp - min_exp), alpha = 0.5, density = True, edgecolor = 'black', label = 'Exp.')#label = r'$\mathrm{Exp.}$')
+                    ax_1.hist(z[:].detach().numpy(), int(max_fine_tuned - min_fine_tuned), weights = weights.detach().numpy(), alpha = 0.5, density = True, edgecolor = 'black', label = 'Tuned')#label = r'$\mathrm{Tuned}$')
                     ax_1.set_xlabel(r'$N_h$')
                     ax_1.set_ylabel(r'$\mathrm{Count}$')
                     ax_1.legend(frameon=False)
                     fig_1.tight_layout()
                     fig_1.savefig(self.results_dir + r'/ARRG_multiplicity_base_vs_exp_vs_tuned.pdf', dpi=300, pad_inches = .1, bbox_inches = 'tight')
     
-                    # Plot sphericity
-                    fig_2, ax_2 = plt.subplots(1,1,figsize=(6,5))
-                    bins = np.histogram(np.hstack((z[:,1].detach().numpy(), w[:,1].detach().numpy())), bins=50)[1]
-                    ax_2.hist(z[:,1].detach().numpy(), bins, label = r'$\mathrm{Base}$', alpha = 0.5, density = True, edgecolor = 'black')
-                    ax_2.hist(w[:,1].detach().numpy(), bins, label = r'$\mathrm{Exp.}$', alpha = 0.5, density = True, edgecolor = 'black')
-                    ax_2.hist(z[:,1].detach().numpy(), bins, weights = weights.detach().numpy(), label = r'$\mathrm{Tuned}$', alpha = 0.5, density = True, edgecolor = 'black')
-                    ax_2.set_xlabel(r'$S$')
-                    ax_2.set_ylabel(r'$\mathrm{Count}$')
-                    ax_2.legend(frameon=False)
-                    fig_2.tight_layout()
-                    fig_2.savefig(self.results_dir + r'/ARRG_sphericity_base_vs_exp_vs_tuned.pdf', dpi=300, pad_inches = .1, bbox_inches = 'tight')
-    
                     # Plot the search space
-                    fig_3, ax_3 = plt.subplots(1,1,figsize=(6,5))
-                    ax_3.plot(np.array(a_b)[:,0], np.array(a_b)[:,1], 'o-', ms = 1.5, alpha = 1.0, color = 'blue')
-                    ax_3.plot(0.6, 1.5, 'x', color='green', label = r'$\mathrm{Target}$')
-                    ax_3.plot(self.params_init[0].clone().detach().numpy(), self.params_init[1].clone().detach().numpy(), 'x', color = 'red', label = r'$\mathrm{Initial}$')
-                    ax_3.axvline(0.6, ls = '--', color = 'green', alpha = 0.3)
-                    ax_3.axvline(1.5, ymax = 0.75, ls = '--', color = 'red', alpha = 0.3)
-                    ax_3.axhline(0.6, ls = '--', color = 'red', alpha = 0.3)
-                    ax_3.axhline(1.5, xmax = 0.67, ls = '--', color = 'green', alpha = 0.3)
-                    ax_3.set_xlim(0.5, 1.6)
-                    ax_3.set_ylim(0.5, 1.6)
-                    ax_3.set_xlabel(r'$a$')
-                    ax_3.set_ylabel(r'$b$')
-                    ax_3.legend(frameon = False, loc = 'upper right')
-                    fig_3.tight_layout()
-                    fig_3.savefig(self.results_dir + r'/ARRG_search_space.pdf', dpi=300, pad_inches = .1, bbox_inches = 'tight')
+                    a_b_target = np.array([0.68, 0.98]) # Monash
+                    fig_2, ax_2 = plt.subplots(1,1,figsize=(6,5))
+                    ax_2.plot(np.array(a_b)[:,0], np.array(a_b)[:,1], 'o-', ms = 1.5, alpha = 1.0, color = 'blue')
+                    ax_2.plot(a_b_target[0], a_b_target[1], 'x', color='green', label = 'Target')#label = r'$\mathrm{Target}$')
+                    ax_2.plot(self.params_init[0].clone().detach().numpy(), self.params_init[1].clone().detach().numpy(), 'x', color = 'red', label = 'Initial')#label = r'$\mathrm{Initial}$')
+                    #ax_2.axvline(0.6, ls = '--', color = 'green', alpha = 0.3)
+                    #ax_2.axvline(1.5, ymax = 0.75, ls = '--', color = 'red', alpha = 0.3)
+                    #ax_2.axhline(0.6, ls = '--', color = 'red', alpha = 0.3)
+                    #ax_2.axhline(1.5, xmax = 0.67, ls = '--', color = 'green', alpha = 0.3)
+                    ax_2.set_xlim(a_b_target[0]-0.1, self.params_base[0].clone().detach().numpy()+0.1)
+                    ax_2.set_ylim(a_b_target[1]+0.1, self.params_base[1].clone().detach().numpy()-0.1)
+                    ax_2.set_xlabel(r'$a$')
+                    ax_2.set_ylabel(r'$b$')
+                    ax_2.legend(frameon = False, loc = 'upper right')
+                    fig_2.tight_layout()
+                    fig_2.savefig(self.results_dir + r'/ARRG_search_space.pdf', dpi=300, pad_inches = .1, bbox_inches = 'tight')
                     
                     # Close figures so RAM isn't soaked up
                     plt.close(fig_1)
                     plt.close(fig_2)
-                    plt.close(fig_3)
                 
         return np.array([self.weight_nexus.params_a.clone().detach().numpy(), self.weight_nexus.params_b.clone().detach().numpy()]), a_b
+    
+    def ARRG_flow(self, optimizer, a_b_init_grid):
+        """
+        Generate gradient flow data
+        """
+        # Initialize gradient tensor
+        a_b_gradient = torch.zeros(len(a_b_init_grid), 2)
+        device = 'cpu'
+        init_counter = 0
+        for a_b_init in tqdm(a_b_init_grid, ncols=100):
+            #tqdm.write(f"a: {a_b_init[0]}, b: {a_b_init[1]}")
+            # Create an intermediate gradient tensor
+            a_b_gradient_i = torch.zeros(2)
+            # Initialize new weight module with different initial parameters
+            self.weight_nexus = LundWeight(self.params_base, a_b_init, over_sample_factor = self.over_sample_factor)
+            for (x,y,z,w) in zip(self.sim_z_base, self.sim_mT_base, self.sim_observable_base, self.exp_observable):
+                x, y, z, w = x.to(device), y.to(device), z.to(device), w.to(device)
+                # Reset the gradients
+                optimizer.zero_grad()
+                # Compute the weights
+                weights = self.weight_nexus(x, y, z)
+                # Compute the loss
+                loss = self.binned_loss(z, w, weights)
+                # Compute gradients via backprop
+                loss.backward()
+                # Save the gradients of a and b
+                switch = 0
+                for param in self.weight_nexus.parameters():
+                    if switch == 0:
+                        switch += 1
+                        #print('Gradient of a:', param.grad.clone().detach().numpy())
+                        a_b_gradient_i[0] = param.grad.clone().detach()
+                    else:
+                        #print('Gradient of b:', param.grad.clone().detach().numpy())
+                        a_b_gradient_i[1] = param.grad.clone().detach()
+            # Write to the master gradient tensor
+            a_b_gradient[init_counter] = a_b_gradient_i.clone()
+            # Iterate the init_counter
+            init_counter += 1
+        # Convert the gradient tensor to a numpy array
+        a_b_gradient = a_b_gradient.numpy()
+        return a_b_gradient
