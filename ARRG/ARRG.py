@@ -19,12 +19,12 @@ sns.set_style("ticks")
 #plt.rcParams['font.size'] = 25
 
 from lund_weight import LundWeight
-from binned_loss import BinnedLoss
+from pseudo_chi2_loss import PseudoChiSquareLoss
 
 class ARRG():
     def __init__(self, epochs, dim_multiplicity, dim_accept_reject, over_sample_factor, params_base,
                  sim_observable_dataloader, sim_kinematics_z_dataloader, sim_kinematics_mT_dataloader, 
-                 exp_observable_dataloader, params_init = None, print_details = False, results_dir = None):
+                 exp_observable_dataloader, params_init = None, print_details = False, results_dir = None, fixed_binning = True):
         """
         ARRG training class for tuning microscopic dynamics (hadronization parameters) from macroscopic observables.
 
@@ -59,18 +59,17 @@ class ARRG():
         self.sim_mT_base = sim_kinematics_mT_dataloader
         self.print_details = print_details
         self.results_dir = results_dir
-
-        print(self.params_init)
+        self.fixed_binning = fixed_binning
 
         # Initialize the Lund weight module
         self.weight_nexus = LundWeight(self.params_base, self.params_init, over_sample_factor = self.over_sample_factor)
         # Initialize the loss
-        self.binned_loss = BinnedLoss(results_dir = self.results_dir , print_detials = self.print_details)
+        self.pseudo_chi2_loss = PseudoChiSquareLoss(results_dir = self.results_dir , print_detials = self.print_details, fixed_binning = self.fixed_binning)
 
         # Create a results directory if it doesn't exist
         if self.results_dir != None:
             if not os.path.exists(self.results_dir):
-                os.mkdir(self.results_dir) 
+                os.mkdir(self.results_dir)
                 print('A model directory was created at,', self.results_dir)
 
     def train_ARRG(self, optimizer, scheduler=None):
@@ -95,7 +94,7 @@ class ARRG():
                 # Compute the weights
                 weights = self.weight_nexus(x, y, z)
                 # Compute the loss
-                loss = self.binned_loss(z, w, weights)
+                loss = self.pseudo_chi2_loss(z, w, weights) #/ x.shape[0]
                 print('----------------------------------------------')
                 print('Loss:', loss.clone().detach().numpy())
                 # Compute gradients via backprop
@@ -163,12 +162,9 @@ class ARRG():
                     ax_2.plot(np.array(a_b)[:,0], np.array(a_b)[:,1], 'o-', ms = 1.5, alpha = 1.0, color = 'blue')
                     ax_2.plot(a_b_target[0], a_b_target[1], 'x', color='green', label = 'Target')#label = r'$\mathrm{Target}$')
                     ax_2.plot(self.params_init[0].clone().detach().numpy(), self.params_init[1].clone().detach().numpy(), 'x', color = 'red', label = 'Initial')#label = r'$\mathrm{Initial}$')
-                    #ax_2.axvline(0.6, ls = '--', color = 'green', alpha = 0.3)
-                    #ax_2.axvline(1.5, ymax = 0.75, ls = '--', color = 'red', alpha = 0.3)
-                    #ax_2.axhline(0.6, ls = '--', color = 'red', alpha = 0.3)
-                    #ax_2.axhline(1.5, xmax = 0.67, ls = '--', color = 'green', alpha = 0.3)
+                    # Set relevant axis limits
                     ax_2.set_xlim(a_b_target[0]-0.1, self.params_base[0].clone().detach().numpy()+0.1)
-                    ax_2.set_ylim(a_b_target[1]+0.1, self.params_base[1].clone().detach().numpy()-0.1)
+                    ax_2.set_ylim(self.params_base[0].clone().detach().numpy()-0.1, a_b_target[1]+0.1)
                     ax_2.set_xlabel(r'$a$')
                     ax_2.set_ylabel(r'$b$')
                     ax_2.legend(frameon = False, loc = 'upper right')
@@ -187,6 +183,7 @@ class ARRG():
         """
         # Initialize gradient tensor
         a_b_gradient = torch.zeros(len(a_b_init_grid), 2)
+        loss_grid = torch.zeros(len(a_b_init_grid))
         device = 'cpu'
         init_counter = 0
         for a_b_init in tqdm(a_b_init_grid, ncols=100):
@@ -202,23 +199,33 @@ class ARRG():
                 # Compute the weights
                 weights = self.weight_nexus(x, y, z)
                 # Compute the loss
-                loss = self.binned_loss(z, w, weights)
+                loss = self.pseudo_chi2_loss(z, w, weights)
+                
                 # Compute gradients via backprop
                 loss.backward()
                 # Save the gradients of a and b
                 switch = 0
+                print('----------------------------------------------')
+                #print('a:', self.weight_nexus.parameters()[0], 'b:', self.weight_nexus.parameters()[1])
+                print('Loss:', loss.clone().detach().numpy())
                 for param in self.weight_nexus.parameters():
                     if switch == 0:
                         switch += 1
-                        #print('Gradient of a:', param.grad.clone().detach().numpy())
+                        print('a:', param.clone().detach().numpy())
+                        print('Gradient of a:', param.grad.clone().detach().numpy())
                         a_b_gradient_i[0] = param.grad.clone().detach()
                     else:
-                        #print('Gradient of b:', param.grad.clone().detach().numpy())
+                        print('b:', param.clone().detach().numpy())
+                        print('Gradient of b:', param.grad.clone().detach().numpy())
                         a_b_gradient_i[1] = param.grad.clone().detach()
+                print('----------------------------------------------')
             # Write to the master gradient tensor
             a_b_gradient[init_counter] = a_b_gradient_i.clone()
+            # Write to the master loss tensor
+            loss_grid[init_counter] = loss.clone().detach()
             # Iterate the init_counter
             init_counter += 1
-        # Convert the gradient tensor to a numpy array
+        # Convert the gradient and loss tensors to numpy arrays
         a_b_gradient = a_b_gradient.numpy()
-        return a_b_gradient
+        loss_grid = loss_grid.numpy()
+        return a_b_gradient, loss_grid
