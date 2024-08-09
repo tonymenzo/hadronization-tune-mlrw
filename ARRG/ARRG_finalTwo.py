@@ -182,7 +182,7 @@ class ARRG():
     
     def ARRG_flow(self, optimizer, a_b_init_grid):
         """
-        Generate gradient flow data
+        Generate gradient flow and loss landscape data
         """
         # Initialize gradient tensor
         a_b_gradient = torch.zeros(len(a_b_init_grid), 2)
@@ -197,15 +197,16 @@ class ARRG():
             self.weight_nexus = LundWeight(self.params_base, a_b_init, over_sample_factor = self.over_sample_factor)
             for (x,y,z,w) in zip(self.sim_z_base, self.sim_fPrel_base, self.sim_observable_base, self.exp_observable):
                 x, y, z, w = x.to(device), y.to(device), z.to(device), w.to(device)
-                print(z.shape)
-                print(z[0])
                 # Reset the gradients
                 optimizer.zero_grad()
                 # Compute the weights
                 weights = self.weight_nexus(x, y)
                 # Compute the loss
                 #loss = self.pseudo_chi2_loss(z, w, weights) / x.shape[0]
-                loss = self.wasserstein_loss(z, w, weights) / x.shape[0]
+                # The weights must be normalized for the Wasserstein loss
+                weights = weights / torch.sum(weights)
+                weights_exp = torch.ones(w.shape[0]) / w.shape[0]
+                loss = self.wasserstein_loss(z, w, weights, weights_exp) / x.shape[0]
                 
                 # Compute gradients via backprop
                 loss.backward()
