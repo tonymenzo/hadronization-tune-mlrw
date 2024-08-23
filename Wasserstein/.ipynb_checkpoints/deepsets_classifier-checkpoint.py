@@ -86,6 +86,25 @@ def plot_score_histogram(exp_scores, sim_scores, sim_weights=None, same_bins=Fal
     plt.ylabel('Density')
     plt.legend()
     plt.show()
+    
+def mult_classifier_plot(exp_scores, sim_scores):
+
+    unique_exp_scores, exp_counts = np.unique(exp_scores, return_counts=True)
+    unique_sim_scores, sim_counts = np.unique(sim_scores, return_counts=True)
+
+    exp_bar_width = np.median(np.diff(unique_exp_scores))
+    sim_bar_width = np.median(np.diff(unique_sim_scores))
+
+    fig, ax = plt.subplots(figsize=(12, 6))
+    ax.bar(unique_exp_scores, exp_counts / np.sum(exp_counts), width=exp_bar_width, alpha=0.7, label='Truth')
+    ax.bar(unique_sim_scores, sim_counts / np.sum(sim_counts), width=sim_bar_width, alpha=0.7, label='Base')
+
+    ax.set_xlabel('Scores')
+    ax.set_ylabel('Density')
+    ax.legend()
+
+    plt.tight_layout()
+    plt.show()
 
 class DeepSetsClassifier(nn.Module):
     def __init__(self, input_dim, phi_hidden_dim=32, rho_hidden_dim=32,
@@ -101,19 +120,19 @@ class DeepSetsClassifier(nn.Module):
         
         # Phi network (element-wise processing)
         phi_layers_list = [nn.Linear(input_dim, phi_hidden_dim),
-                           nn.BatchNorm1d(phi_hidden_dim),
-                           nn.LeakyReLU(negative_slope=s),
+                           #nn.BatchNorm1d(phi_hidden_dim),
+                           nn.Tanh(),#negative_slope=s),
                            nn.Dropout(dropout_prob)]
         
         for _ in range(1, phi_layers-1):
             phi_layers_list.extend([
                 nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                nn.BatchNorm1d(phi_hidden_dim), 
-                nn.LeakyReLU(negative_slope=s),
+                #nn.BatchNorm1d(phi_hidden_dim), 
+                nn.Tanh(),#(negative_slope=s),
                 nn.Dropout(dropout_prob)
             ])
         phi_layers_list.extend([nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                nn.LeakyReLU(negative_slope=s)])
+                nn.Tanh()])#nn.LeakyReLU(negative_slope=s)])
         
         self.phi = nn.Sequential(*phi_layers_list)
 
@@ -122,8 +141,8 @@ class DeepSetsClassifier(nn.Module):
         for _ in range(rho_layers - 1):
             rho_layers_list.extend([
                 nn.Linear(phi_hidden_dim, rho_hidden_dim),
-                nn.BatchNorm1d(rho_hidden_dim),
-                nn.LeakyReLU(negative_slope=s),
+                # nn.BatchNorm1d(rho_hidden_dim),
+                nn.Tanh(),#LeakyReLU(negative_slope=s),
                 nn.Dropout(dropout_prob)
             ])
             phi_hidden_dim = rho_hidden_dim
@@ -142,25 +161,35 @@ class DeepSetsClassifier(nn.Module):
         # x shape: (batch_size, n_particles, input_dim)
         # mask shape: (batch_size, n_particles)
         batch_size, n_particles, input_dim = x.size()
-
-        # Apply phi only to non-zero entries
-        if self.mask_pad:
-            if mask is None:
-                # Create mask for non-zero entries
+        
+        # Create mask for non-zero entries if not provided
+        if mask is None:
                 mask = (x != 0).any(dim=-1)  # shape: (batch_size, n_particles)
-            # shared whether mask pre-created or not
-            non_zero_x = x[mask]  # shape: (num_non_zero, input_dim)
-            processed_x = self.phi(non_zero_x)  # shape: (num_non_zero, output_dim)
-            output = torch.zeros(batch_size, n_particles, processed_x.size(-1), device=x.device)
-            output[mask] = processed_x
-            # Aggregate the results
-            output = output.sum(dim=1)  # Sum along the particle dimension
+
+        # Separate non-zero entries and padding
+        non_zero_mask = mask
+        # Process non-zero entries
+        non_zero_x = x[non_zero_mask]  # shape: (num_non_zero, input_dim)
+        processed_non_zero_x = self.phi(non_zero_x)  # shape: (num_non_zero, output_dim)
+        
+        # Initialize output tensor
+        output = torch.zeros(batch_size, n_particles, processed_non_zero_x.size(-1), device=x.device)
+        output[non_zero_mask] = processed_non_zero_x
+            
+        if self.mask_pad:
+            # If you want phi to apply to the padded entries
+            # Aggregate the results (summing along the particle dimension)
+            output = output.sum(dim=1)  # Sum along the particle dimensio
         else:
-            processed_x = self.phi(x)  # shape: (num_non_zero, output_dim)
-            # Create a tensor to hold the processed values
-            output = torch.zeros(batch_size, n_particles, processed_x.size(-1), device=x.device)
-            # Aggregate by mean
-            output = output.sum(dim=1) / mask.float().sum(dim=1, keepdim=True).clamp(min=1)
+            pad_mask = ~mask  # Inverse of the non-zero mask
+
+            # Process padding (only once)
+            padding_value = x.new_zeros(input_dim)  # Tensor of zeros as padding value
+            processed_pad_x = self.phi(padding_value.unsqueeze(0))  # shape: (1, output_dim)
+
+            output[pad_mask] = processed_pad_x.repeat(pad_mask.sum(), 1)
+            
+            output = output.mean(dim=1)  # Mean across particles
 
         # Apply rho to the aggregated set
         output = self.rho(output)
@@ -168,19 +197,22 @@ class DeepSetsClassifier(nn.Module):
         return output.squeeze()
     
     def train_classifier(self, train_exp_loader, train_sim_loader, val_exp_loader, val_sim_loader, 
-                         device, num_epochs=10, learning_rate=0.001):
+                         device, num_epochs=10, learning_rate=0.001, pretraining_epochs=0):
         optimizer = optim.Adam(self.parameters(), lr=learning_rate)
         
-        for epoch in range(num_epochs):
+        epoch_n=0
+        for epoch in range(num_epochs+pretraining_epochs):
             
             self.train().to(device)
             train_loss = 0.0
             train_exp_loss = 0.0
             train_sim_loss = 0.0
             
-            train_exp_loader_tdqm = train_exp_loader#tqdm(train_exp_loader, desc="Training", leave=False)
+            train_exp_loader_tdqm = tqdm(train_exp_loader, desc="Training", leave=False)
             # Training phase
+            # optimizer.zero_grad()
             for (exp_batch, sim_batch) in zip(train_exp_loader_tdqm, train_sim_loader):
+                
                 optimizer.zero_grad()
                 
                 exp_data = exp_batch[0]
@@ -190,27 +222,49 @@ class DeepSetsClassifier(nn.Module):
 
                 exp_output = self(exp_data, exp_mask)
                 sim_output = self(sim_data, sim_mask)
+                
+                # Labeling and loss calculation:
+                if epoch_n < pretraining_epochs:
+                # Gaussian of mean 0.5 and standard deviation of 0.5
+                    exp_output = torch.sigmoid(exp_output)
+                    sim_ouput = torch.sigmoid(sim_output)
+                    std = 0.2
+                    exp_labels = torch.randn_like(exp_output) * std + 0.5
+                    sim_labels = torch.randn_like(sim_output) * std + 0.5
 
-                exp_labels = torch.ones(exp_output.size(0), dtype=exp_output.dtype, device=exp_output.device)
-                sim_labels = torch.zeros(sim_output.size(0), dtype=sim_output.dtype, device=sim_output.device)
+                    # Calculate the variance of the network outputs
+                    exp_variance = torch.var(exp_output, unbiased=False)
+                    sim_variance = torch.var(sim_output, unbiased=False)
+                    #variance_loss_exp = (exp_variance - std**2) ** 2
+                    #variance_loss_sim = (sim_variance - std**2) ** 2
+                    #variance_loss = (variance_loss_exp + variance_loss_sim)/2
 
-                loss_exp = self.criterion(exp_output, exp_labels)
-                loss_sim = self.criterion(sim_output, sim_labels)
-                loss = (loss_exp + loss_sim) / 2
+                    mse_loss = nn.MSELoss()
+                    loss_exp = mse_loss(exp_output, exp_labels)
+                    loss_sim = mse_loss(sim_output, sim_labels)
+                else:
+                    exp_labels = torch.ones(exp_output.size(0), dtype=exp_output.dtype, device=exp_output.device)
+                    sim_labels = torch.zeros(sim_output.size(0), dtype=sim_output.dtype, device=sim_output.device)
+
+                    loss_exp = self.criterion(exp_output, exp_labels)
+                    loss_sim = self.criterion(sim_output, sim_labels)
+                loss = (loss_exp + loss_sim) / 2# + 10*variance_loss
 
                 loss.backward()
+                
                 optimizer.step()
 
                 train_loss += loss.item() * exp_data.size(0)
                 train_exp_loss += loss_exp.item() * exp_data.size(0)
-                train_sim_loss += loss_sim.item() * sim_data.size(0)
+                train_sim_loss += loss_sim.item() * sim_data.size(0) 
                 
             # Validation phase
             self.eval()
             val_loss = 0.0
             val_exp_loss = 0.0
             val_sim_loss = 0.0
-            train_sim_loader_tdqm = tqdm(val_sim_loader, desc="Validating", leave=False)
+            average_score = 0.0
+            train_sim_loader_tdqm = val_sim_loader#tqdm(val_sim_loader, desc="Validating", leave=False)
             with torch.no_grad():
                 for (exp_batch, sim_batch) in zip(train_sim_loader_tdqm, val_sim_loader):
                 
@@ -221,17 +275,31 @@ class DeepSetsClassifier(nn.Module):
 
                     exp_output = self(exp_data, exp_mask)
                     sim_output = self(sim_data, sim_mask)
+                    
+                    # Labeling and loss calculation:
+                    if epoch_n < pretraining_epochs:
+                    # Gaussian of mean 0.5 and standard deviation of 0.5
+                        exp_output = torch.sigmoid(exp_output)
+                        sim_ouput = torch.sigmoid(sim_output)
+                        std = 0.2
+                        exp_labels = torch.randn_like(exp_output) * std + 0.5
+                        sim_labels = torch.randn_like(sim_output) * std + 0.5
+                        
+                        mse_loss = nn.MSELoss()
+                        loss_exp = mse_loss(exp_output, exp_labels)
+                        loss_sim = mse_loss(sim_output, sim_labels)
+                    else:
+                        exp_labels = torch.ones(exp_output.size(0), dtype=exp_output.dtype, device=exp_output.device)
+                        sim_labels = torch.zeros(sim_output.size(0), dtype=sim_output.dtype, device=sim_output.device)
 
-                    exp_labels = torch.ones(exp_output.size(0), dtype=exp_output.dtype, device=exp_output.device)
-                    sim_labels = torch.zeros(sim_output.size(0), dtype=sim_output.dtype, device=sim_output.device)
-
-                    loss_exp = self.criterion(exp_output, exp_labels)
-                    loss_sim = self.criterion(sim_output, sim_labels)
-                    loss = (loss_exp + loss_sim) / 2
-
-                    val_loss += loss.item() * exp_data.size(0)
-                    val_exp_loss += loss_exp.item() * exp_data.size(0)
-                    val_sim_loss += loss_sim.item() * sim_data.size(0)
+                        loss_exp = self.criterion(exp_output, exp_labels)
+                        loss_sim = self.criterion(sim_output, sim_labels)
+                loss = (loss_exp + loss_sim) / 2# + 10*variance_loss
+                
+                val_loss += loss.item() * exp_data.size(0)
+                val_exp_loss += loss_exp.item() * exp_data.size(0)
+                val_sim_loss += loss_sim.item() * sim_data.size(0)
+                average_score += np.mean(torch.sigmoid(exp_output).cpu().detach().numpy())* exp_data.size(0) + np.mean(torch.sigmoid(sim_output).cpu().detach().numpy())* sim_data.size(0)
 
             train_loss /= len(train_exp_loader.dataset)
             train_exp_loss /= len(train_exp_loader.dataset)
@@ -239,13 +307,17 @@ class DeepSetsClassifier(nn.Module):
             val_loss /= len(val_exp_loader.dataset)
             val_exp_loss /= len(val_exp_loader.dataset)
             val_sim_loss /= len(val_sim_loader.dataset)
+            average_score /= len(train_exp_loader.dataset)
             
             self.train_loss.append(train_loss)
             self.val_loss.append(val_loss)
 
-            print(f'Epoch [{epoch+1}/{num_epochs}]')
-            print(f'Train Loss: {train_loss:.5f}, Train Exp Loss: {train_exp_loss:.4f}, Train Sim Loss: {train_sim_loss:.4f}')
-            print(f'Val Loss: {val_loss:.5f}, Val Exp Loss: {val_exp_loss:.4f}, Val Sim Loss: {val_sim_loss:.4f}\n')
+            if epoch_n < pretraining_epochs: print(f'Pretraining epoch [{epoch+1}/{num_epochs}]')
+            else: print(f'Epoch [{epoch+1}/{num_epochs}]')
+            print(f'Train Loss: {train_loss:.5g}, Train Exp Loss: {train_exp_loss:.4g}, Train Sim Loss: {train_sim_loss:.4g}')
+            print(f'Val Loss: {val_loss:.5g}, Val Exp Loss: {val_exp_loss:.4g}, Val Sim Loss: {val_sim_loss:.4g}')
+            # print(f'Average score: {average_score:.5g}\n')
+            epoch_n += 1
             
     def evaluate_model(self, test_exp_loader, test_sim_loader):
         self.eval()
