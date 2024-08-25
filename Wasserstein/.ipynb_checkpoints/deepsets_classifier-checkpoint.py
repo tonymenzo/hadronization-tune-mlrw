@@ -120,19 +120,22 @@ class DeepSetsClassifier(nn.Module):
         
         # Phi network (element-wise processing)
         phi_layers_list = [nn.Linear(input_dim, phi_hidden_dim),
-                           #nn.BatchNorm1d(phi_hidden_dim),
-                           nn.Tanh(),#negative_slope=s),
+                           #nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6),
+                           nn.LeakyReLU(negative_slope=s),
+                           nn.LayerNorm(phi_hidden_dim),
                            nn.Dropout(dropout_prob)]
         
         for _ in range(1, phi_layers-1):
             phi_layers_list.extend([
                 nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                #nn.BatchNorm1d(phi_hidden_dim), 
-                nn.Tanh(),#(negative_slope=s),
+                #nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
+                nn.LeakyReLU(negative_slope=s),
+                nn.LayerNorm(phi_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
         phi_layers_list.extend([nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                nn.Tanh()])#nn.LeakyReLU(negative_slope=s)])
+                 nn.LeakyReLU(negative_slope=s),#,
+                 nn.LayerNorm(phi_hidden_dim)])#nn.LeakyReLU(negative_slope=s)])
         
         self.phi = nn.Sequential(*phi_layers_list)
 
@@ -141,8 +144,9 @@ class DeepSetsClassifier(nn.Module):
         for _ in range(rho_layers - 1):
             rho_layers_list.extend([
                 nn.Linear(phi_hidden_dim, rho_hidden_dim),
-                # nn.BatchNorm1d(rho_hidden_dim),
-                nn.Tanh(),#LeakyReLU(negative_slope=s),
+                #nn.BatchNorm1d(rho_hidden_dim, momentum=0.05, eps=1e-6),
+                nn.LeakyReLU(negative_slope=s),
+                nn.LayerNorm(rho_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
             phi_hidden_dim = rho_hidden_dim
