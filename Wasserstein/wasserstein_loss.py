@@ -95,8 +95,10 @@ class Wasserstein_Tuner:
 
                 # Backpropagate to accumulate gradients
                 loss.backward()
+                
+                self.optimizer.step()
 
-                weights.detach()
+                # weights.detach()
 
                 # Record current values of params_a and params_b
                 self.param_history.append({
@@ -107,8 +109,6 @@ class Wasserstein_Tuner:
 
                 train_loss += loss.item()
 
-            # After all batches in the epoch, update parameters
-            self.optimizer.step()
             # Print current values of params_a and params_b
             # Zero gradients for the next epoch
             self.optimizer.zero_grad()
@@ -150,6 +150,7 @@ class Wasserstein_Tuner:
         """
         # Initialize gradient tensor
         a_b_gradient = torch.zeros(len(a_b_init_grid), 2)
+        loss_over_batches = 0
         loss_grid = torch.zeros(len(a_b_init_grid))
         init_counter = 0
 
@@ -177,14 +178,15 @@ class Wasserstein_Tuner:
 
                 # Backpropagation to compute gradients
                 loss.backward(retain_graph=True)
+                loss_over_batches += loss.item()
 
                 # Extract gradients for params_a and params_b
-                a_b_gradient_i[0] += self.weight_nexus.params_a.grad.clone().detach()
-                a_b_gradient_i[1] += self.weight_nexus.params_b.grad.clone().detach()
+                a_b_gradient_i[0] -= self.weight_nexus.params_a.grad.clone().detach()
+                a_b_gradient_i[1] -= self.weight_nexus.params_b.grad.clone().detach()
 
             # Average gradients across batches
             a_b_gradient_i /= len(flow_loader)
-
+            loss_over_batches /= len(flow_loader)
             # Write to the master gradient tensor
             a_b_gradient[init_counter] = a_b_gradient_i.clone()
             loss_grid[init_counter] = loss.clone().detach()

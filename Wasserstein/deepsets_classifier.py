@@ -15,23 +15,25 @@ from tqdm import tqdm
 
     return exp_loader, sim_loader"""
 
-def prepare_data(exp_obs, sim_obs, batch_size=10000):
+def prepare_data(exp_obs, sim_obs, batch_size=10000, num_workers=4, pin_memory=True):
     # Calculate masks for non-zero entries
     exp_mask = (exp_obs != 0).any(dim=-1)
     sim_mask = (sim_obs != 0).any(dim=-1)
     
     # Create datasets with observations and masks
     exp_dataset = TensorDataset(
-        exp_obs.clone().detach().requires_grad_(True),
+        exp_obs.clone().detach().requires_grad_(False),
         exp_mask.clone().detach()
     )
     sim_dataset = TensorDataset(
-        sim_obs.clone().detach().requires_grad_(True),
+        sim_obs.clone().detach().requires_grad_(False),
         sim_mask.clone().detach()
     )
     # Create data loaders
-    exp_loader = DataLoader(exp_dataset, batch_size=batch_size, shuffle=True)
-    sim_loader = DataLoader(sim_dataset, batch_size=batch_size, shuffle=True)
+    exp_loader = DataLoader(exp_dataset, batch_size=batch_size, shuffle=True, 
+                            num_workers=num_workers, pin_memory=pin_memory)
+    sim_loader = DataLoader(sim_dataset, batch_size=batch_size, shuffle=True, 
+                            num_workers=num_workers, pin_memory=pin_memory)
     
     return exp_loader, sim_loader
     
@@ -72,14 +74,14 @@ def plot_score_histogram(exp_scores, sim_scores, sim_weights=None, same_bins=Fal
     
     plt.figure(figsize=(10, 6))
     
-    # Plot histogram for experimental scores
-    plt.hist(exp_scores, bins=bin_edges, density=True, alpha=0.7, label="Truth")
-    
-    # Plot histogram for simulated scores with weights if provided
+    # Plot histogram for experimental scores as a line
+    plt.hist(exp_scores, bins=bin_edges, density=True, histtype='step', linewidth=2, label="Truth")
+
+    # Plot histogram for simulated scores with weights as a line
     if sim_weights is not None:
-        plt.hist(sim_scores, bins=bin_edges, density=True, weights=sim_weights, alpha=0.7, label="Base")
+        plt.hist(sim_scores, bins=bin_edges, density=True, weights=sim_weights, histtype='step', linewidth=2, label="Base (Reweighted)")
     else:
-        plt.hist(sim_scores, bins=bin_edges, density=True, alpha=0.7, label="Base")
+        plt.hist(sim_scores, bins=bin_edges, density=True, histtype='step', linewidth=2, label="Base")
     
     plt.title('Histogram of Classifier Scores (On Test Set)')
     plt.xlabel('Truth score')
@@ -108,8 +110,8 @@ def mult_classifier_plot(exp_scores, sim_scores):
 
 class DeepSetsClassifier(nn.Module):
     def __init__(self, input_dim, phi_hidden_dim=32, rho_hidden_dim=32,
-                 phi_layers=3, rho_layers=3,
-                 dropout_prob=0.2, mask_pad=False, momentum=0.1):
+                 phi_layers=3, rho_layers=3, device=torch.device("cuda"),
+                 dropout_prob=0.2, mask_pad=False,  momentum=0.1):
         super(DeepSetsClassifier, self).__init__()
         # Inputs:
         #    - mask_pad: whether to apply phi to padding or ignore
@@ -120,39 +122,41 @@ class DeepSetsClassifier(nn.Module):
         
         # Phi network (element-wise processing)
         phi_layers_list = [nn.Linear(input_dim, phi_hidden_dim),
-                           #nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6),
+                           nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6),
                            nn.LeakyReLU(negative_slope=s),
-                           nn.LayerNorm(phi_hidden_dim),
+                           #nn.LayerNorm(phi_hidden_dim),
                            nn.Dropout(dropout_prob)]
         
         for _ in range(1, phi_layers-1):
             phi_layers_list.extend([
                 nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                #nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
+                nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
                 nn.LeakyReLU(negative_slope=s),
-                nn.LayerNorm(phi_hidden_dim),
+                #nn.LayerNorm(phi_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
-        phi_layers_list.extend([nn.Linear(phi_hidden_dim, phi_hidden_dim),
-                 nn.LeakyReLU(negative_slope=s),#,
-                 nn.LayerNorm(phi_hidden_dim)])#nn.LeakyReLU(negative_slope=s)])
+        phi_layers_list.extend([
+                nn.Linear(phi_hidden_dim, phi_hidden_dim),
+                nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
+                nn.LeakyReLU(negative_slope=s)])#,
+                #nn.LayerNorm(phi_hidden_dim)])#nn.LeakyReLU(negative_slope=s)])
         
-        self.phi = nn.Sequential(*phi_layers_list)
+        self.phi = nn.Sequential(*phi_layers_list).to(device)
 
         # Rho network (permutation-invariant aggregation)
         rho_layers_list = []
         for _ in range(rho_layers - 1):
             rho_layers_list.extend([
                 nn.Linear(phi_hidden_dim, rho_hidden_dim),
-                #nn.BatchNorm1d(rho_hidden_dim, momentum=0.05, eps=1e-6),
+                nn.BatchNorm1d(rho_hidden_dim, momentum=0.05, eps=1e-6),
                 nn.LeakyReLU(negative_slope=s),
-                nn.LayerNorm(rho_hidden_dim),
+                #nn.LayerNorm(rho_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
             phi_hidden_dim = rho_hidden_dim
         
         rho_layers_list.append(nn.Linear(rho_hidden_dim, 1))
-        self.rho = nn.Sequential(*rho_layers_list)
+        self.rho = nn.Sequential(*rho_layers_list).to(device)
         
         total_params = sum(p.numel() for p in self.parameters())
         print(f'Number of learnable parameters: {total_params}')
@@ -160,20 +164,30 @@ class DeepSetsClassifier(nn.Module):
         self.criterion = nn.BCEWithLogitsLoss()
         self.train_loss = []
         self.val_loss = []
+        
+        self.device = device
     
-    def forward(self, x, mask=None):
+    def forward(self, x, mask=None, device=None):
         # x shape: (batch_size, n_particles, input_dim)
         # mask shape: (batch_size, n_particles)
+        if device == None: 
+            device = self.device
+        else:
+            print(device)
+            self.rho = self.rho.to(device) 
+            self.phi = self.phi.to(device) 
+            
+        x = x.to(device)
         batch_size, n_particles, input_dim = x.size()
         
         # Create mask for non-zero entries if not provided
-        if mask is None:
-                mask = (x != 0).any(dim=-1)  # shape: (batch_size, n_particles)
-
+        if mask is None: mask = (x != 0).any(dim=-1)  # shape: (batch_size, n_particles)
+        else: mask = mask.to(x.device)
         # Separate non-zero entries and padding
         non_zero_mask = mask
         # Process non-zero entries
         non_zero_x = x[non_zero_mask]  # shape: (num_non_zero, input_dim)
+
         processed_non_zero_x = self.phi(non_zero_x)  # shape: (num_non_zero, output_dim)
         
         # Initialize output tensor
@@ -197,6 +211,11 @@ class DeepSetsClassifier(nn.Module):
 
         # Apply rho to the aggregated set
         output = self.rho(output)
+        
+        # Move tensors back to CPU and detach
+        x.cpu().detach()
+        mask.cpu().detach()
+        del x, mask  # Optional: Free GPU memory explicitly
 
         return output.squeeze()
     
@@ -219,13 +238,21 @@ class DeepSetsClassifier(nn.Module):
                 
                 optimizer.zero_grad()
                 
-                exp_data = exp_batch[0]
-                exp_mask = exp_batch[1]
-                sim_data = sim_batch[0]
-                sim_mask = sim_batch[1]
+                exp_data = exp_batch[0]#.to(device)
+                exp_mask = exp_batch[1]#.to(device)
+                sim_data = sim_batch[0]#.to(device)
+                sim_mask = sim_batch[1]#.to(device)
 
-                exp_output = self(exp_data, exp_mask)
-                sim_output = self(sim_data, sim_mask)
+                # Combine the data and masks
+                combined_data = torch.cat([exp_batch[0], sim_batch[0]], dim=0)
+                combined_mask = torch.cat([exp_batch[1], sim_batch[1]], dim=0)
+
+                # Forward pass with the combined data
+                combined_output = self(combined_data, combined_mask)
+
+                # Separate the outputs, should do more gracefully in preprocessing
+                exp_output = combined_output[:exp_batch[0].size(0)] 
+                sim_output = combined_output[exp_batch[0].size(0):]
                 
                 # Labeling and loss calculation:
                 if epoch_n < pretraining_epochs:
@@ -236,13 +263,6 @@ class DeepSetsClassifier(nn.Module):
                     exp_labels = torch.randn_like(exp_output) * std + 0.5
                     sim_labels = torch.randn_like(sim_output) * std + 0.5
 
-                    # Calculate the variance of the network outputs
-                    exp_variance = torch.var(exp_output, unbiased=False)
-                    sim_variance = torch.var(sim_output, unbiased=False)
-                    #variance_loss_exp = (exp_variance - std**2) ** 2
-                    #variance_loss_sim = (sim_variance - std**2) ** 2
-                    #variance_loss = (variance_loss_exp + variance_loss_sim)/2
-
                     mse_loss = nn.MSELoss()
                     loss_exp = mse_loss(exp_output, exp_labels)
                     loss_sim = mse_loss(sim_output, sim_labels)
@@ -252,7 +272,7 @@ class DeepSetsClassifier(nn.Module):
 
                     loss_exp = self.criterion(exp_output, exp_labels)
                     loss_sim = self.criterion(sim_output, sim_labels)
-                loss = (loss_exp + loss_sim) / 2# + 10*variance_loss
+                loss = (loss_exp + loss_sim) / 2 #+ 1e-3 * sum(torch.sum(torch.abs(param)) for param in self.parameters())
 
                 loss.backward()
                 
@@ -303,7 +323,6 @@ class DeepSetsClassifier(nn.Module):
                 val_loss += loss.item() * exp_data.size(0)
                 val_exp_loss += loss_exp.item() * exp_data.size(0)
                 val_sim_loss += loss_sim.item() * sim_data.size(0)
-                average_score += np.mean(torch.sigmoid(exp_output).cpu().detach().numpy())* exp_data.size(0) + np.mean(torch.sigmoid(sim_output).cpu().detach().numpy())* sim_data.size(0)
 
             train_loss /= len(train_exp_loader.dataset)
             train_exp_loss /= len(train_exp_loader.dataset)
@@ -311,7 +330,6 @@ class DeepSetsClassifier(nn.Module):
             val_loss /= len(val_exp_loader.dataset)
             val_exp_loss /= len(val_exp_loader.dataset)
             val_sim_loss /= len(val_sim_loader.dataset)
-            average_score /= len(train_exp_loader.dataset)
             
             self.train_loss.append(train_loss)
             self.val_loss.append(val_loss)
