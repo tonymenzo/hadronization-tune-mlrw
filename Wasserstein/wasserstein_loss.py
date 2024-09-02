@@ -16,56 +16,67 @@ class WassersteinLoss(torch.nn.Module):
         super(WassersteinLoss, self).__init__()
         self.print_details = print_details
 
-    def forward(self, x, y, x_weights=None, y_weights=None):
+    def forward(self, x, y, x_weights=None, y_weights=None, deltas=None, x_cdf_indices=None, y_cdf_indices=None, pre_sorted=True):
+        # pre_sorted: x and y tensors are already sorted.
         # Ensure the tensors are on the same device as the weights
         device = x.device if x_weights is not None else y.device
-
         # Detach tensors to prevent gradient calculations
         x = x.detach().to(device)
         y = y.detach().to(device)
 
-        # Sort and compute intermediate tensors on the same device
-        x_sorter = torch.argsort(x).to(device)
-        y_sorter = torch.argsort(y).to(device)
+        if not pre_sorted:
+            # Sort and compute intermediate tensors on the same device
+            x_sorter = torch.argsort(x)
+            y_sorter = torch.argsort(y)
+            x = x[x_sorter].to(device)
+            y = y[y_sorter].to(device)
+            if x_weights is not None:
+                x_weights = x_weights[x_sorter].to(device)
+            if y_weights is not None:
+                y_weights = y_weights[y_sorter].to(device)
 
-        all_values = torch.cat((x, y)).to(device)
+        all_values = torch.cat((x, y))
         all_values, _ = torch.sort(all_values)
 
-        # Compute the differences between pairs of successive values
-        deltas = torch.diff(all_values).to(device)
+            # Compute the differences between pairs of successive values
+        if deltas is None: deltas = torch.diff(all_values)
 
         # Get the respective positions of the values of x and y among the values of both distributions
-        x_cdf_indices = torch.searchsorted(x[x_sorter], all_values[:-1], right=True).to(device)
-        y_cdf_indices = torch.searchsorted(y[y_sorter], all_values[:-1], right=True).to(device)
+        if x_cdf_indices is None: x_cdf_indices = torch.searchsorted(x, all_values[:-1], right=True)
+        if y_cdf_indices is None: y_cdf_indices = torch.searchsorted(y, all_values[:-1], right=True)
 
         # Calculate the CDFs of x and y using their weights, if specified
         if x_weights is None:
             x_cdf = x_cdf_indices.float() / x.size(0)
         else:
             x_sorted_cumweights = torch.cat((torch.zeros(1, device=device), 
-                                             torch.cumsum(x_weights[x_sorter], dim=0).to(device)))
+                                             torch.cumsum(x_weights, dim=0)))
             x_cdf = x_sorted_cumweights[x_cdf_indices] / x_sorted_cumweights[-1]
 
         if y_weights is None:
             y_cdf = y_cdf_indices.float() / y.size(0)
         else:
-            cumsum = torch.cumsum(y_weights[y_sorter], dim=0).to(device)
             y_sorted_cumweights = torch.cat((torch.zeros(1, device=device), 
-                                             cumsum))
+                                             torch.cumsum(y_weights, dim=0)))
             y_cdf = y_sorted_cumweights[y_cdf_indices] / y_sorted_cumweights[-1]
 
         # Compute the final sum on the appropriate device
-        return torch.sum(torch.abs(x_cdf - y_cdf) * deltas).to(device)
+        return torch.sum(torch.abs(x_cdf - y_cdf) * deltas)
 
-    
 class Wasserstein_Tuner:
     def __init__(self, weight_nexus, learning_rate=0.001):
         self.weight_nexus = weight_nexus
         self.learning_rate = learning_rate
-        self.optimizer = torch.optim.Adam([self.weight_nexus.params_a, self.weight_nexus.params_b], lr=self.learning_rate)
-        self.wasserstein_loss = WassersteinLoss()
+        self.optimizer = torch.optim.SGD(self.weight_nexus.parameters(), lr=learning_rate)
+        self.wasserstein_loss = ot.wasserstein_1d
         self.param_history = []
 
+        self.param_history.append({
+                    'epoch': 0,
+                    'params_a': self.weight_nexus.params_a.item(),
+                    'params_b': self.weight_nexus.params_b.item()
+                })
+        
     def train(self, train_loader: DataLoader, val_loader: DataLoader, num_epochs: int = 10, verbose=False):
         print("Beginning parameter tuning...")
         print(f"Initial (a, b): ({self.weight_nexus.params_a.item():.4f}, {self.weight_nexus.params_b.item():.4f})")
@@ -76,6 +87,9 @@ class Wasserstein_Tuner:
             self.optimizer.zero_grad()  # Zero the gradients before starting the epoch
 
             for batch in tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs} [Train]", leave=False):
+                
+                self.optimizer.zero_grad()
+                
                 # Unpack the batch
                 exp_scores_data = batch['exp_scores']
                 sim_scores_data = batch['sim_scores']
@@ -88,18 +102,16 @@ class Wasserstein_Tuner:
 
                 # Calculate weights
                 weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
-
+                
                 # Calculate Wasserstein distance
-                loss = self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
+                loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
                 # print("wd =", loss.item())
 
                 # Backpropagate to accumulate gradients
                 loss.backward()
                 
                 self.optimizer.step()
-
-                # weights.detach()
-
+                
                 # Record current values of params_a and params_b
                 self.param_history.append({
                     'epoch': epoch + 1,
@@ -134,7 +146,8 @@ class Wasserstein_Tuner:
                     weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
 
                     # Calculate Wasserstein distance
-                    loss = self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
+                    loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
+                    #self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
 
                     val_loss += loss.item()
 
@@ -174,13 +187,12 @@ class Wasserstein_Tuner:
                 weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
 
                 # Calculate Wasserstein distance
-                loss = self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
+                loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
+                #loss = self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
 
-                # Backpropagation to compute gradients
-                loss.backward(retain_graph=True)
+                loss.backward(retain_graph=False)
                 loss_over_batches += loss.item()
 
-                # Extract gradients for params_a and params_b
                 a_b_gradient_i[0] -= self.weight_nexus.params_a.grad.clone().detach()
                 a_b_gradient_i[1] -= self.weight_nexus.params_b.grad.clone().detach()
 

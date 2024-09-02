@@ -5,6 +5,7 @@ from torch.utils.data import DataLoader, TensorDataset
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
+from sklearn.metrics import roc_auc_score
 
 """def prepare_data(exp_obs, sim_obs, batch_size=32):
     exp_dataset = TensorDataset(exp_obs.clone().detach().requires_grad_(True))
@@ -30,9 +31,9 @@ def prepare_data(exp_obs, sim_obs, batch_size=10000, num_workers=4, pin_memory=T
         sim_mask.clone().detach()
     )
     # Create data loaders
-    exp_loader = DataLoader(exp_dataset, batch_size=batch_size, shuffle=True, 
+    exp_loader = DataLoader(exp_dataset, batch_size=batch_size, shuffle=False, 
                             num_workers=num_workers, pin_memory=pin_memory)
-    sim_loader = DataLoader(sim_dataset, batch_size=batch_size, shuffle=True, 
+    sim_loader = DataLoader(sim_dataset, batch_size=batch_size, shuffle=False, 
                             num_workers=num_workers, pin_memory=pin_memory)
     
     return exp_loader, sim_loader
@@ -109,7 +110,7 @@ def mult_classifier_plot(exp_scores, sim_scores):
     plt.show()
 
 class DeepSetsClassifier(nn.Module):
-    def __init__(self, input_dim, phi_hidden_dim=32, rho_hidden_dim=32,
+    def __init__(self, input_dim, phi_hidden_dim=64, rho_hidden_dim=64,
                  phi_layers=3, rho_layers=3, device=torch.device("cuda"),
                  dropout_prob=0.2, mask_pad=False,  momentum=0.1):
         super(DeepSetsClassifier, self).__init__()
@@ -124,7 +125,7 @@ class DeepSetsClassifier(nn.Module):
         phi_layers_list = [nn.Linear(input_dim, phi_hidden_dim),
                            nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6),
                            nn.LeakyReLU(negative_slope=s),
-                           #nn.LayerNorm(phi_hidden_dim),
+                           nn.LayerNorm(phi_hidden_dim),
                            nn.Dropout(dropout_prob)]
         
         for _ in range(1, phi_layers-1):
@@ -132,14 +133,14 @@ class DeepSetsClassifier(nn.Module):
                 nn.Linear(phi_hidden_dim, phi_hidden_dim),
                 nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
                 nn.LeakyReLU(negative_slope=s),
-                #nn.LayerNorm(phi_hidden_dim),
+                nn.LayerNorm(phi_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
         phi_layers_list.extend([
                 nn.Linear(phi_hidden_dim, phi_hidden_dim),
                 nn.BatchNorm1d(phi_hidden_dim, momentum=0.05, eps=1e-6), 
-                nn.LeakyReLU(negative_slope=s)])#,
-                #nn.LayerNorm(phi_hidden_dim)])#nn.LeakyReLU(negative_slope=s)])
+                nn.LeakyReLU(negative_slope=s),#,
+                nn.LayerNorm(phi_hidden_dim)])#nn.LeakyReLU(negative_slope=s)])
         
         self.phi = nn.Sequential(*phi_layers_list).to(device)
 
@@ -150,7 +151,7 @@ class DeepSetsClassifier(nn.Module):
                 nn.Linear(phi_hidden_dim, rho_hidden_dim),
                 nn.BatchNorm1d(rho_hidden_dim, momentum=0.05, eps=1e-6),
                 nn.LeakyReLU(negative_slope=s),
-                #nn.LayerNorm(rho_hidden_dim),
+                nn.LayerNorm(rho_hidden_dim),
                 nn.Dropout(dropout_prob)
             ])
             phi_hidden_dim = rho_hidden_dim
@@ -199,6 +200,8 @@ class DeepSetsClassifier(nn.Module):
             # Aggregate the results (summing along the particle dimension)
             output = output.sum(dim=1)  # Sum along the particle dimensio
         else:
+            output = output.mean(dim=1)
+            """# Does not work with BatchNorm in phi
             pad_mask = ~mask  # Inverse of the non-zero mask
 
             # Process padding (only once)
@@ -207,7 +210,7 @@ class DeepSetsClassifier(nn.Module):
 
             output[pad_mask] = processed_pad_x.repeat(pad_mask.sum(), 1)
             
-            output = output.mean(dim=1)  # Mean across particles
+            output = output.mean(dim=1)  # Mean across particles"""
 
         # Apply rho to the aggregated set
         output = self.rho(output)
@@ -272,7 +275,7 @@ class DeepSetsClassifier(nn.Module):
 
                     loss_exp = self.criterion(exp_output, exp_labels)
                     loss_sim = self.criterion(sim_output, sim_labels)
-                loss = (loss_exp + loss_sim) / 2 #+ 1e-3 * sum(torch.sum(torch.abs(param)) for param in self.parameters())
+                loss = (loss_exp + loss_sim) / 2 #+ 1e-5 * sum(torch.sum(param ** 2) for param in self.parameters())
 
                 loss.backward()
                 
@@ -287,7 +290,8 @@ class DeepSetsClassifier(nn.Module):
             val_loss = 0.0
             val_exp_loss = 0.0
             val_sim_loss = 0.0
-            average_score = 0.0
+            all_labels = []
+            all_predictions = []
             train_sim_loader_tdqm = val_sim_loader#tqdm(val_sim_loader, desc="Validating", leave=False)
             with torch.no_grad():
                 for (exp_batch, sim_batch) in zip(train_sim_loader_tdqm, val_sim_loader):
@@ -318,11 +322,21 @@ class DeepSetsClassifier(nn.Module):
 
                         loss_exp = self.criterion(exp_output, exp_labels)
                         loss_sim = self.criterion(sim_output, sim_labels)
-                loss = (loss_exp + loss_sim) / 2# + 10*variance_loss
-                
-                val_loss += loss.item() * exp_data.size(0)
-                val_exp_loss += loss_exp.item() * exp_data.size(0)
-                val_sim_loss += loss_sim.item() * sim_data.size(0)
+
+                        # Collect labels and predictions for ROC AUC calculation
+                        all_labels.extend(exp_labels.cpu().numpy())
+                        all_labels.extend(sim_labels.cpu().numpy())
+                        all_predictions.extend(torch.sigmoid(exp_output).cpu().numpy())
+                        all_predictions.extend(torch.sigmoid(sim_output).cpu().numpy())
+
+                    loss = (loss_exp + loss_sim) / 2
+
+                    val_loss += loss.item() * exp_data.size(0)
+                    val_exp_loss += loss_exp.item() * exp_data.size(0)
+                    val_sim_loss += loss_sim.item() * sim_data.size(0)
+
+            # Calculate ROC AUC score
+            roc_auc = roc_auc_score(all_labels, all_predictions)
 
             train_loss /= len(train_exp_loader.dataset)
             train_exp_loss /= len(train_exp_loader.dataset)
@@ -330,16 +344,19 @@ class DeepSetsClassifier(nn.Module):
             val_loss /= len(val_exp_loader.dataset)
             val_exp_loss /= len(val_exp_loader.dataset)
             val_sim_loss /= len(val_sim_loader.dataset)
-            
+
             self.train_loss.append(train_loss)
             self.val_loss.append(val_loss)
 
-            if epoch_n < pretraining_epochs: print(f'Pretraining epoch [{epoch+1}/{num_epochs}]')
-            else: print(f'Epoch [{epoch+1}/{num_epochs}]')
+            if epoch_n < pretraining_epochs:
+                print(f'Pretraining epoch [{epoch+1}/{num_epochs}]')
+            else:
+                print(f'Epoch [{epoch+1}/{num_epochs}]')
             print(f'Train Loss: {train_loss:.5g}, Train Exp Loss: {train_exp_loss:.4g}, Train Sim Loss: {train_sim_loss:.4g}')
             print(f'Val Loss: {val_loss:.5g}, Val Exp Loss: {val_exp_loss:.4g}, Val Sim Loss: {val_sim_loss:.4g}')
-            # print(f'Average score: {average_score:.5g}\n')
+            print(f'ROC AUC Score: {roc_auc:.8f}')
             epoch_n += 1
+
             
     def evaluate_model(self, test_exp_loader, test_sim_loader):
         self.eval()
