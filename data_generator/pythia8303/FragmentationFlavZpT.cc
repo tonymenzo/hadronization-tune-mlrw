@@ -1478,6 +1478,14 @@ bool StringZ::deriveBLund() {
 
 double StringZ::zFrag( int idOld, int idNew, double mT2) {
 
+  // Stream the squared transverse mass to a file
+  ofstream file("mT2_i.txt", ios::in | ios::out | ios::app);
+  // Output the squared transverse mass to the file.
+  file << setprecision(10) << mT2 << endl;
+  file.close();
+
+  //cout << "mT2 = " << mT2 << endl;
+
   // Find if old or new flavours correspond to diquarks.
   int idOldAbs = abs(idOld);
   int idNewAbs = abs(idNew);
@@ -1594,7 +1602,8 @@ double StringZ::zLund( double a, double b, double c) {
   bool accept = false;
   double over_sample_factor = 10.;
   deque<double> accept_reject;
-  int MAX_REJECT = 100;
+  deque<double> fPrelDeq;
+  int MAX_REJECT = 99;
 
   do {
     // Choice of z flat good enough for distribution peaked in the middle;
@@ -1618,22 +1627,35 @@ double StringZ::zLund( double a, double b, double c) {
 
     // Evaluate actual f(z) (if in physical range) and correct.
     if (z > 0 && z < 1) {
+      // Write out fPrel to 
+      //cout << a << " " << b << " " << c << endl;
       double fRnd = rndmPtr->flat();
       double fExp = b * (1. / zMax - 1. / z)+ c * log(zMax / z);
       if (!aIsZero) fExp += a * log( (1. - z) / (1. - zMax) );
-      fVal = exp( max( -EXPMAX, min( EXPMAX, fExp) ) ) ;
+      fVal = exp( max( -EXPMAX, min( EXPMAX, fExp) ) ) ; 
+      // Print out the value of the likelihood
       double fPrb = fVal / (fPrel * over_sample_factor);
       accept = fPrb > fRnd;
       // Append rejected values to end of deque and the accepted value to the front.
       if (!accept){
+        //cout << "Rejected fVal(" << z <<") = " << fVal << endl;
         accept_reject.push_back(z);
+        fPrelDeq.push_back(fPrel);
         // If the number of rejections exceeds the maximum, clear the deque.
         if (accept_reject.size() > (unsigned)MAX_REJECT) {
           //cout << accept_reject.size() << endl;
           //cout << "Number of rejected samples exceeded MAX_REJECTIONS, clearing deque." << endl;
-          accept_reject.clear();
+          //accept_reject.clear();
+          //cout << "Number of rejected samples exceeded MAX_REJECTIONS, clearing last element in deque." << endl;
+          //accept_reject.pop_front();
+          accept_reject.pop_back();
+          fPrelDeq.pop_back();
         }
-      } else accept_reject.push_front(z);
+      } else {
+        accept_reject.push_front(z);
+        fPrelDeq.push_front(fPrel);
+      //cout << "Accepted fVal(" << z <<") = " << fVal << endl;
+      }
     } else fVal = 0.;
   } while (!accept);
 
@@ -1649,13 +1671,38 @@ double StringZ::zLund( double a, double b, double c) {
   //cout << "The final accepted values is: " << z << endl;
 
   // Stream the accepted and rejected values to a file. 
-  ofstream file("fragmentation_chain_i.txt", ios::in | ios::out | ios::app);
+  ofstream file_ar("fragmentation_chain_i.txt", ios::in | ios::out | ios::app);
   // Output the accepted and rejected values to the file.
   for (auto i = accept_reject.begin(); i != accept_reject.end(); ++i) {
-    file << *i << ' ';
+    file_ar << setprecision(10) << *i << ' ';
   }
-  file << endl;
-  file.close();
+  file_ar << endl;
+  file_ar.close();
+
+  // Stream the fPrel values to a file
+  ofstream file_fPrel("fPrel_i.txt", ios::in | ios::out | ios::app);
+  // Output the fPrel values to the file.
+  for (auto i = fPrelDeq.begin(); i != fPrelDeq.end(); ++i) {
+    file_fPrel << setprecision(10) << *i << ' ';
+  }
+  file_fPrel << endl;
+  file_fPrel.close();
+
+  // ------- Check the likelihood f(z) ------- //
+  
+  // Create a list of values between zero and one
+  //std::vector<double> zList;
+  //for (double i = 0.0; i <= 1.0; i += (1/100.0)) {
+  //  zList.push_back(i);
+  //}
+
+  //// Print out values of fValFrag from the StringZ class.
+  //for (int i = 0; i < int(zList.size()); ++i) {
+  //  double fValListMonashPrime = fValFrag(zList[i], 1.0, 0.72, 0.88);
+  //  double fValListMonash      = fValFrag(zList[i], 1.0, 0.68, 0.98);
+  //  //cout << setprecision(10) << "fValFrag for z = " << zList[i] << ": " << fValList << endl;
+  //  cout << setprecision(10) << "z = " << zList[i] << ": " << fValListMonash / fValListMonashPrime << endl;
+  //}
 
   // Done.
   return z;
@@ -1702,6 +1749,41 @@ double StringZ::zPeterson( double epsilon) {
   } while (fVal < rndmPtr->flat());
   return z;
 
+}
+
+double StringZ::fValFrag(double z, double mT2, double a, double bShape) {
+
+  double b = bShape * mT2;
+  double c = 1.;
+
+  // Special cases
+  bool aIsZero = (a < AFROMZERO);
+
+  // Determine position of maximum
+  double zMax;
+  if (aIsZero) {
+      zMax = (c > b) ? b / c : 1.;
+  } else if (abs(a - c) < AFROMC) {
+      zMax = b / (b + c);
+  } else {
+      zMax = 0.5 * (b + c - sqrt(pow2(b - c) + 4. * a * b)) / (c - a);
+      if (zMax > 0.9999 && b > 100.) zMax = min(zMax, 1. - a / b);
+  }
+
+  // Generate z value
+  //double z;
+  //do {
+  //    z = rndmPtr->flat();
+  //} while (z <= 0 || z >= 1);
+
+  // Calculate fVal
+  double fExp = b * (1. / zMax - 1. / z) + c * log(zMax / z);
+  if (!aIsZero) {
+      fExp += a * log((1. - z) / (1. - zMax));
+  }
+  double fVal = exp(max(-EXPMAX, min(EXPMAX, fExp)));
+
+  return fVal;
 }
 
 //==========================================================================
