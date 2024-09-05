@@ -64,11 +64,11 @@ class WassersteinLoss(torch.nn.Module):
         return torch.sum(torch.abs(x_cdf - y_cdf) * deltas)
 
 class Wasserstein_Tuner:
-    def __init__(self, weight_nexus, learning_rate=0.001):
+    def __init__(self, weight_nexus, loss = ot.wasserstein_1d, learning_rate=0.001):
         self.weight_nexus = weight_nexus
         self.learning_rate = learning_rate
         self.optimizer = torch.optim.SGD(self.weight_nexus.parameters(), lr=learning_rate)
-        self.wasserstein_loss = ot.wasserstein_1d
+        self.loss = loss
         self.param_history = []
 
         self.param_history.append({
@@ -77,7 +77,7 @@ class Wasserstein_Tuner:
                     'params_b': self.weight_nexus.params_b.item()
                 })
         
-    def train(self, train_loader: DataLoader, val_loader: DataLoader, num_epochs: int = 10, verbose=False):
+    def train(self, train_loader: DataLoader, val_loader: DataLoader = None, num_epochs: int = 10, verbose=False):
         print("Beginning parameter tuning...")
         print(f"Initial (a, b): ({self.weight_nexus.params_a.item():.4f}, {self.weight_nexus.params_b.item():.4f})")
         for epoch in range(num_epochs):
@@ -91,21 +91,22 @@ class Wasserstein_Tuner:
                 self.optimizer.zero_grad()
                 
                 # Unpack the batch
-                exp_scores_data = batch['exp_scores']
-                sim_scores_data = batch['sim_scores']
+                exp_data = batch['exp_data']
+                sim_data = batch['sim_data']
                 sim_accept_reject_data = batch['sim_accept_reject']
                 sim_fPrel_data = batch['sim_fPrel']
-                exp_scores_data.detach()
-                sim_scores_data.detach()
-                sim_accept_reject_data.detach()
-                sim_fPrel_data.detach()
 
                 # Calculate weights
                 weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
                 
                 # Calculate Wasserstein distance
-                loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
-                # print("wd =", loss.item())
+                if self.loss == ot.wasserstein_1d:
+                    loss = self.loss(exp_data, sim_data, v_weights = weights/torch.sum(weights))
+                elif self.loss == ot.sliced_wasserstein_distance:
+                    projections = get_random_projections(d=exp_data.shape[1], n_projections=10, type_as=exp_data.dtype)
+                    projections = projections.to(exp_data.device)
+                    loss = self.loss(exp_data, sim_data, a=None, b=weights/torch.sum(weights), projections=projections, p=2, seed=123)
+                #self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
 
                 # Backpropagate to accumulate gradients
                 loss.backward()
@@ -130,32 +131,36 @@ class Wasserstein_Tuner:
             if verbose: 
                 print(f"Current (a, b): ({self.weight_nexus.params_a.item():.6f}, {self.weight_nexus.params_b.item():.6f})")
                 print(f"Epoch {epoch+1}/{num_epochs}, Training Loss: {avg_train_loss:.4g}")
+            
+            if val_loader is not None:
+                # Validation loop
+                self.weight_nexus.eval()
+                val_loss = 0.0
+                with torch.no_grad():
+                    for batch in val_loader:
+                        # Unpack the batch
+                        exp_data = batch['exp_data']
+                        sim_data = batch['sim_data']
+                        sim_accept_reject_data = batch['sim_accept_reject']
+                        sim_fPrel_data = batch['sim_fPrel']
 
-            # Validation loop
-            self.weight_nexus.eval()
-            val_loss = 0.0
-            with torch.no_grad():
-                for batch in val_loader:
-                    # Unpack the batch
-                    exp_scores_data = batch['exp_scores']
-                    sim_scores_data = batch['sim_scores']
-                    sim_accept_reject_data = batch['sim_accept_reject']
-                    sim_fPrel_data = batch['sim_fPrel']
+                        # Calculate weights
+                        weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
 
-                    # Calculate weights
-                    weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
+                        # Calculate Wasserstein distance
+                        if self.loss == ot.wasserstein_1d:
+                            loss = self.loss(exp_data, sim_data, v_weights = weights/torch.sum(weights))
+                        elif self.loss == ot.sliced_wasserstein_distance:
+                            loss = self.loss(exp_data, sim_data, a=None, b=weights/torch.sum(weights), n_projections=50, p=2, seed=123, log=False)
+                        #self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
 
-                    # Calculate Wasserstein distance
-                    loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
-                    #self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
+                        val_loss += loss.item()
 
-                    val_loss += loss.item()
+                # Print validation loss for this epoch
+                avg_val_loss = val_loss / len(val_loader)
+                if verbose: print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4g}")
 
-            # Print validation loss for this epoch
-            avg_val_loss = val_loss / len(val_loader)
-            if verbose: print(f"Epoch {epoch+1}/{num_epochs}, Validation Loss: {avg_val_loss:.4g}")
-
-        return self.weight_nexus
+                return self.weight_nexus
 
     def Wasserstein_flow(self, flow_loader: DataLoader, a_b_init_grid):
         """
@@ -175,22 +180,24 @@ class Wasserstein_Tuner:
             a_b_gradient_i = torch.zeros(2)
             for batch in flow_loader:
                 # Unpack the batch
+                exp_data = batch['exp_data']
+                sim_data = batch['sim_data']
                 sim_accept_reject_data = batch['sim_accept_reject']
                 sim_fPrel_data = batch['sim_fPrel']
-                sim_scores_data = batch['sim_scores']
-                exp_scores_data = batch['exp_scores']
-
-                # Zero the gradients
-                self.optimizer.zero_grad()
 
                 # Calculate weights
                 weights = self.weight_nexus(sim_accept_reject_data, sim_fPrel_data)
-
+                
                 # Calculate Wasserstein distance
-                loss = ot.wasserstein_1d(exp_scores_data, sim_scores_data, v_weights = weights/torch.sum(weights))
-                #loss = self.wasserstein_loss(exp_scores_data, sim_scores_data, y_weights=weights)
-
-                loss.backward(retain_graph=False)
+                if self.loss == ot.wasserstein_1d:
+                    loss = self.loss(exp_data, sim_data, v_weights = weights/torch.sum(weights))
+                elif self.loss == ot.sliced_wasserstein_distance:
+                    projections = get_random_projections(d=exp_data.shape[1], n_projections=10, type_as=exp_data.dtype)
+                    projections = projections.to(exp_data.device)
+                    loss = self.loss(exp_data, sim_data, a=None, b=weights/torch.sum(weights), projections=projections, p=2, seed=123)
+                
+                # Backpropagate to accumulate gradients
+                loss.backward()
                 loss_over_batches += loss.item()
 
                 a_b_gradient_i[0] -= self.weight_nexus.params_a.grad.clone().detach()
@@ -235,3 +242,46 @@ def a_b_grid(x_range, y_range, n_points):
     grid_flattened = torch.stack([x_grid.flatten(), y_grid.flatten()], dim=1)
 
     return grid_flattened
+
+def get_random_projections(d, n_projections, seed=123, type_as=None):
+    r"""
+    Generates n_projections samples from the uniform on the unit sphere of dimension :math:`d-1`: :math:`\mathcal{U}(\mathcal{S}^{d-1})`
+    Adapted from ot library
+    Parameters
+    ----------
+    d : int
+        dimension of the space
+    n_projections : int
+        number of samples requested
+    seed: int or RandomState, optional
+        Seed used for numpy random number generator
+    backend:
+        Backend to use for random generation
+
+    Returns
+    -------
+    out: ndarray, shape (d, n_projections)
+        The uniform unit vectors on the sphere
+
+    Examples
+    --------
+    >>> n_projections = 100
+    >>> d = 5
+    >>> projs = get_random_projections(d, n_projections)
+    >>> np.allclose(np.sum(np.square(projs), 0), 1.)  # doctest: +NORMALIZE_WHITESPACE
+    True
+
+    """
+    
+    # Set the seed for torch if provided
+    if seed is not None:
+        torch.manual_seed(seed)
+
+    # Generate random projections using torch
+    projections = torch.randn(d, n_projections, dtype=type_as) if type_as is not None else torch.randn(d, n_projections)
+    
+    # Normalize projections along the second dimension
+    projections = projections / torch.sqrt(torch.sum(projections**2, dim=0, keepdim=True))
+    
+    return projections
+
